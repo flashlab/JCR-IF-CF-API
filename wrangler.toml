@@ -5,4 +5,4 @@ compatibility_date = "2024-12-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "jcr-db"
-database_id = "xxx"
+database_id = "b5c22a4b-bd97-43d0-a8b6-a8e85abb4664"

@@ -2,3 +2,4 @@
 seed.sql
 node_modules/
 .wrangler*
+*.csv
