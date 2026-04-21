@@ -20,11 +20,13 @@ npm run deploy         # Deploy to Cloudflare
 
 | Parameter | Required | Description |
 |-----------|----------|-------------|
-| `q` | Yes | Search keyword. Use `\|` to OR multiple terms (e.g. `LANCET\|NATURE`). If keyword matches `^\d{4}-\d{3}[\dxX]$`, searches ISSN/EISSN; otherwise searches Name/Abbr. |
+| `q` | Yes | Search keyword. Use `\|` to OR multiple terms (e.g. `LANCET\|NATURE`). If keyword matches `^\d{4}-\d{3}[\dxX]$`, searches ISSN/EISSN; otherwise searches Name/Abbr. at least 3 chars each keyword. |
 | `is_eissn` | No | ISSN-mode only. `true`/`1`: match EISSN only. `false`/`0`: match ISSN only. Omit: match both. |
 | `is_abbr` | No | Name/Abbr-mode only — selects which column to search. `0`/`false`: `name` only. `1`/`true`: `abbr` only. Omit: both `name` and `abbr`. `is_abbr=1` narrows the match to journals (fenqu has no `abbr`). |
-| `f` | No | Name/Abbr-mode only — fuzzy pattern. Omit: exact equality. **`1`: `kw%` (prefix, B-tree index).** **`2`: `%kw%` (substring, FTS5 trigram index).** **`3`: `%kw` (suffix, FTS5 trigram + LIKE post-filter).** Keywords shorter than 3 chars on `f=2`/`f=3` fall back to LIKE scan. Literal `%` / `_` / `\` inside `q` are escaped; `"` is doubled for FTS phrases. |
+| `f` | No | Name/Abbr-mode only — fuzzy pattern. Omit: exact equality. **`1`: `kw%` (prefix, B-tree index).** **`2`: `%kw%` (substring, FTS5 trigram index).** **`3`: `%kw` (suffix, FTS5 trigram + LIKE post-filter).** Literal `%` / `_` / `\` inside `q` are escaped; `"` is doubled for FTS phrases. |
 | `show_all` | No | `0` *(default)*: return name, abbr, jif_2024, jif_quartile, fenqu, is_top. `1`: return all fields from both tables. Internal `qname` / `qabbr` mirror columns are never exposed. |
+| `case` | No | Output case for `name` (and `abbr` unless `case_abbr` overrides). `0` *(default)*: original. `1`: all lower. `2`: first word upper. `3`: title case. `4`: ALL UPPER. |
+| `case_abbr` | No | Output case for `abbr` only — same values as `case`. If omitted, `abbr` follows `case`. |
 | `page` | No | Page number (default: `1`) |
 | `page_size` | No | Results per page, 1–100 (default: `20`) |
 
@@ -93,6 +95,11 @@ For fenqu-only rows, journals-derived fields (`abbr`, `jif_2024`, `jif_quartile`
 
 # Pagination
 /api/jcr?q=nature&page=2&page_size=5
+
+# Output case formatting
+/api/jcr?q=LANCET&case=1                  # name + abbr all lowercase
+/api/jcr?q=LANCET&case=3                  # name + abbr title case
+/api/jcr?q=LANCET&case=1&case_abbr=4      # name lowercase, abbr ALL UPPER
 ```
 
 ## Architecture

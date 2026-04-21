@@ -38,16 +38,21 @@ ISSN and EISSN are stored as UPPERCASE in both tables.
 
 ## API Query Logic
 
+### Input Validation
+- Keywords are uppercased, then any character outside `[A-Z0-9 &'()+,\-./:] ` is silently stripped. The legal set was derived from actual name/abbr values across both CSVs.
+- After stripping, each non-ISSN keyword must be ≥ 3 characters; shorter keywords return 400.
+
 ### Search Mode (per keyword after `|` split)
-- Keywords are uppercased once at request entry.
 - If keyword matches `^\d{4}-\d{3}[\dxX]$` → **ISSN mode**: searches `issn`/`eissn` columns (direct equality).
 - Otherwise → **Name/Abbr mode**: searches `qname` / `qabbr` (pre-uppercased mirror columns, indexed).
 
 ### Parameters
 - **`is_eissn`** (ISSN mode only): `true`/`1` = EISSN only; `false`/`0` = ISSN only; omit = both.
 - **`is_abbr`** (Name/Abbr mode only — **column selector**): `0`/`false` = search `qname` only; `1`/`true` = search `qabbr` only; omit = search both. `is_abbr=1` makes the fenqu arm vacuous (no `qabbr` column there) — only journals contributes.
-- **`f`** (Name/Abbr mode only — **pattern selector**): omit = exact equality (`= ?`); **`1` = `kw%` (prefix, B-tree index)**; **`2` = `%kw%` (substring, FTS5 trigram)**; **`3` = `%kw` (suffix, FTS5 trigram + LIKE post-filter)**. `f=2`/`f=3` on keywords shorter than 3 chars fall back to LIKE scan since the trigram tokenizer needs ≥3 chars. Applied to the column(s) chosen by `is_abbr`. Literal `%` / `_` / `\` in keywords are escaped (`LIKE ? ESCAPE '\'`); `"` in keywords is doubled for FTS phrases.
+- **`f`** (Name/Abbr mode only — **pattern selector**): omit = exact equality (`= ?`); **`1` = `kw%` (prefix, B-tree index)**; **`2` = `%kw%` (substring, FTS5 trigram)**; **`3` = `%kw` (suffix, FTS5 trigram + LIKE post-filter)**. Applied to the column(s) chosen by `is_abbr`. Literal `%` / `_` / `\` in keywords are escaped (`LIKE ? ESCAPE '\'`); `"` in keywords is doubled for FTS phrases.
 - **`show_all`**: `0`/omit = name, abbr, jif_2024, jif_quartile, fenqu, is_top; `1` = all fields from both tables (internal `qname` / `qabbr` are never exposed).
+- **`case`** (output formatting): `0`/omit = original case; `1` = all lower; `2` = first word upper; `3` = upper camel case (title case); `4` = ALL UPPER. Applies to both `name` and `abbr` unless `case_abbr` overrides.
+- **`case_abbr`** (output formatting, `abbr` only): same values as `case`. If set, overrides `case` for `abbr`; if omitted, `abbr` follows `case`.
 - **`page`**, **`page_size`** (1–100, default 20): pagination.
 
 ### Full-Outer-Join Merge
@@ -88,6 +93,9 @@ Successful `GET /api/jcr` responses are cached for 24h at both the browser (`Cac
 /api/jcr?q=LOGY&f=3                          # suffix (FTS5 trigram + LIKE post-filter)
 /api/jcr?q=LANCET&show_all=1
 /api/jcr?q=LANCET&page=1&page_size=5
+/api/jcr?q=LANCET&case=1                        # name + abbr lowercase
+/api/jcr?q=LANCET&case=3                        # name + abbr title case
+/api/jcr?q=LANCET&case=1&case_abbr=4            # name lowercase, abbr UPPER
 ```
 
 ## Data Notes

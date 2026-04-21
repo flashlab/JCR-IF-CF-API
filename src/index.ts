@@ -7,8 +7,9 @@ const ISSN_RE = /^\d{4}-\d{3}[\dxX]$/;
 // Cache TTL for successful responses (24h). Data refreshes yearly, so this is safe.
 const CACHE_TTL_SECONDS = 86400;
 
-// Trigram tokenizer needs ≥3 chars per MATCH token; shorter keywords fall back to LIKE.
-const FTS_MIN_LEN = 3;
+// Legal characters in query keywords (post-uppercase). Derived from actual name/abbr
+// values across both CSVs. Anything outside this set is silently stripped.
+const ILLEGAL_CHARS_RE = /[^A-Z0-9 &'()+,\-./:]/g;
 
 // Column projection strategy: we pull all output columns into jcr_hits so arm A
 // reads the materialized CTE instead of re-reading journals. Three aligned lists
@@ -92,6 +93,19 @@ function ftsPhrase(kw: string): string {
   return `"${kw.replace(/"/g, '""')}"`;
 }
 
+// Output case transformation for name / abbr fields.
+// 0 = original, 1 = lower, 2 = first-word upper, 3 = title case, 4 = UPPER.
+function transformCase(s: string | null, mode: number): string | null {
+  if (s == null || mode === 0) return s;
+  switch (mode) {
+    case 1: return s.toLowerCase();
+    case 2: { const low = s.toLowerCase(); return low.charAt(0).toUpperCase() + low.slice(1); }
+    case 3: return s.toLowerCase().replace(/\b\w/g, c => c.toUpperCase());
+    case 4: return s.toUpperCase();
+    default: return s;
+  }
+}
+
 // Half-open prefix upper bound so `col >= kw AND col < prefixUpperBound(kw)`
 // is equivalent to `col LIKE kw || '%'` under BINARY collation — and, unlike
 // LIKE with ESCAPE, lets SQLite do an index range scan on qname/qabbr.
@@ -167,10 +181,8 @@ function buildKeywordMatch(
   const out = emptyMatch();
 
   // Substring (f=2) / suffix (f=3): FTS5 trigram, with LIKE post-filter for suffix.
-  // Short keywords (<3 chars) can't be tokenized as trigrams — fall back to LIKE scan.
-  const useFts = (f === '2' || f === '3') && kw.length >= FTS_MIN_LEN;
-
-  if (useFts) {
+  // Input validation guarantees kw.length >= 3, so the trigram tokenizer always applies.
+  if (f === '2' || f === '3') {
     const phrase = ftsPhrase(kw);
     const jcrPhrase = `${ftsColFilter(cols)}: ${phrase}`;
 
@@ -209,25 +221,6 @@ function buildKeywordMatch(
 
     if (fqOk) {
       out.fenquWhere = { sql: `(f.qname >= ? AND f.qname < ?)`, bindings: [kw, hi] };
-    }
-    return out;
-  }
-
-  // LIKE fallbacks — substring (f=2) / suffix (f=3) for sub-3-char keywords where
-  // the FTS5 trigram tokenizer can't produce tokens. Leading `%` prevents any
-  // index prefix use here, so ESCAPE is safe (no optimization to lose).
-  let pat: string | null = null;
-  if (f === '2') pat = `%${escapeLike(kw)}%`;
-  else if (f === '3') pat = `%${escapeLike(kw)}`;
-
-  if (pat !== null) {
-    const parts = cols.map(c => `j.${c} LIKE ? ESCAPE '\\'`);
-    const jcrSql = parts.length === 1 ? parts[0] : `(${parts.join(' OR ')})`;
-    const jcrBindings: unknown[] = cols.map(() => pat);
-    out.jcrWhere = { sql: jcrSql, bindings: jcrBindings };
-
-    if (fqOk) {
-      out.fenquWhere = { sql: `f.qname LIKE ? ESCAPE '\\'`, bindings: [pat] };
     }
     return out;
   }
@@ -330,10 +323,21 @@ export default {
       const showAll = params.get('show_all') === '1';
       const page    = Math.max(1, parseInt(params.get('page') ?? '1', 10) || 1);
       const pageSize = Math.min(100, Math.max(1, parseInt(params.get('page_size') ?? '20', 10) || 20));
+      const nameCase = Math.min(4, Math.max(0, parseInt(params.get('case') ?? '0', 10) || 0));
+      const abbrCaseRaw = params.get('case_abbr');
+      const abbrCase = abbrCaseRaw != null
+        ? Math.min(4, Math.max(0, parseInt(abbrCaseRaw, 10) || 0))
+        : nameCase;
 
-      const keywords = q.split('|').map(k => k.trim().toUpperCase()).filter(k => k.length > 0);
+      const keywords = q.split('|')
+        .map(k => k.trim().toUpperCase().replace(ILLEGAL_CHARS_RE, ''))
+        .filter(k => k.length > 0);
       if (keywords.length === 0) {
         return jsonResponse({ error: 'Empty query' }, 400);
+      }
+      const tooShort = keywords.filter(k => !ISSN_RE.test(k) && k.length < 3);
+      if (tooShort.length > 0) {
+        return jsonResponse({ error: `Each keyword must be at least 3 characters (too short: ${tooShort.join(', ')})` }, 400);
       }
 
       const offset = (page - 1) * pageSize;
@@ -480,6 +484,8 @@ SELECT COUNT(*) AS total FROM merged`;
           if (k === '_src' || k === '_sortkey' || k === '_total') continue;
           clean[k] = r[k];
         }
+        if ('name' in clean) clean['name'] = transformCase(clean['name'] as string | null, nameCase);
+        if ('abbr' in clean) clean['abbr'] = transformCase(clean['abbr'] as string | null, abbrCase);
         return clean;
       });
 
