@@ -8,68 +8,15 @@ const ISSN_RE = /^\d{4}-\d{3}[\dxX]$/;
 const CACHE_TTL_SECONDS = 86400;
 
 // Legal characters in query keywords (post-uppercase). Derived from actual name/abbr
-// values across both CSVs. Anything outside this set is silently stripped.
+// values across JCR / Fenqu / Medline. Anything outside this set is silently stripped.
 const ILLEGAL_CHARS_RE = /[^A-Z0-9 &'()+,\-./:]/g;
 
-// Column projection strategy: we pull all output columns into jcr_hits so arm A
-// reads the materialized CTE instead of re-reading journals. Three aligned lists
-// per variant (default / show_all):
-//   - CTE cols: `j.X AS c_X` — what jcr_hits materializes.
-//   - JCR out:  `h.c_X AS X` + fenqu `f.X AS X` — arm A projection from (h, f).
-//   - FQ  out:  NULL + `f.X AS X` — arm B projection with journals cols NULL.
-// Prefix `c_` avoids FTS5 reserved-word collisions (notably `rank` under show_all)
-// and disambiguates materialized copies from the base-table names. `qname` /
-// `qabbr` are internal search mirrors; neither appears in output.
+// Output column lists — parallel between main (journals-sourced) and medline
+// (medline-sourced, LEFT-JOINed to journals via journals_id). Both paths produce
+// the same column shape so the Worker merges them transparently.
 
-const JCR_CTE_COLS_DEFAULT =
-  'j.qname AS _sortkey, ' +
-  'j.name AS c_name, j.abbr AS c_abbr, j.jif_2024 AS c_jif_2024, j.jif_quartile AS c_jif_quartile';
-
-const JCR_OUT_DEFAULT =
-  'h._sortkey AS _sortkey, ' +
-  'h.c_name AS name, h.c_abbr AS abbr, h.c_jif_2024 AS jif_2024, h.c_jif_quartile AS jif_quartile, ' +
-  'f.fenqu AS fenqu, f.is_top AS is_top';
-
-const FQ_OUT_DEFAULT =
-  'f.qname AS _sortkey, ' +
-  'f.name AS name, NULL AS abbr, NULL AS jif_2024, NULL AS jif_quartile, ' +
-  'f.fenqu AS fenqu, f.is_top AS is_top';
-
-const JCR_CTE_COLS_ALL =
-  'j.qname AS _sortkey, ' +
-  'j.rank AS c_rank, j.name AS c_name, j.abbr AS c_abbr, j.publisher AS c_publisher, ' +
-  'j.issn AS c_issn, j.eissn AS c_eissn, ' +
-  'j.total_cites AS c_total_cites, j.total_articles AS c_total_articles, j.citable_items AS c_citable_items, ' +
-  'j.cited_half_life AS c_cited_half_life, j.citing_half_life AS c_citing_half_life, ' +
-  'j.jif_2024 AS c_jif_2024, j.five_year_jif AS c_five_year_jif, ' +
-  'j.jif_without_self_cites AS c_jif_without_self_cites, j.jci AS c_jci, ' +
-  'j.jif_quartile AS c_jif_quartile, j.jif_rank AS c_jif_rank';
-
-const JCR_OUT_ALL =
-  'h._sortkey AS _sortkey, ' +
-  'h.c_rank AS rank, h.c_name AS name, h.c_abbr AS abbr, h.c_publisher AS publisher, ' +
-  'h.c_issn AS issn, h.c_eissn AS eissn, ' +
-  'h.c_total_cites AS total_cites, h.c_total_articles AS total_articles, h.c_citable_items AS citable_items, ' +
-  'h.c_cited_half_life AS cited_half_life, h.c_citing_half_life AS citing_half_life, ' +
-  'h.c_jif_2024 AS jif_2024, h.c_five_year_jif AS five_year_jif, ' +
-  'h.c_jif_without_self_cites AS jif_without_self_cites, h.c_jci AS jci, ' +
-  'h.c_jif_quartile AS jif_quartile, h.c_jif_rank AS jif_rank, ' +
-  'f.fenqu AS fenqu, f.is_top AS is_top, ' +
-  'f.dalei_en AS dalei_en, f.dalei_zh AS dalei_zh, f.xiaolei_info AS xiaolei_info, ' +
-  'f.db_source AS db_source, f.lang AS lang';
-
-const FQ_OUT_ALL =
-  'f.qname AS _sortkey, ' +
-  'NULL AS rank, f.name AS name, NULL AS abbr, f.publisher AS publisher, ' +
-  'f.issn AS issn, f.eissn AS eissn, ' +
-  'NULL AS total_cites, NULL AS total_articles, NULL AS citable_items, ' +
-  'NULL AS cited_half_life, NULL AS citing_half_life, ' +
-  'NULL AS jif_2024, NULL AS five_year_jif, ' +
-  'NULL AS jif_without_self_cites, NULL AS jci, ' +
-  'NULL AS jif_quartile, NULL AS jif_rank, ' +
-  'f.fenqu AS fenqu, f.is_top AS is_top, ' +
-  'f.dalei_en AS dalei_en, f.dalei_zh AS dalei_zh, f.xiaolei_info AS xiaolei_info, ' +
-  'f.db_source AS db_source, f.lang AS lang';
+// Default projection: name, abbr, jif_2024, jif_quartile, fenqu, is_top + nlm_id (NULL on main).
+// `_sortkey` drives ORDER BY; `_src` separates main-direct rows from medline-mapped rows.
 
 function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
@@ -114,127 +61,77 @@ function prefixUpperBound(kw: string): string {
   if (last < 0xffff) {
     return kw.slice(0, -1) + String.fromCharCode(last + 1);
   }
-  return kw + '\uffff';
+  return kw + '￿';
 }
 
-// Each keyword lands in exactly one category per side:
-//   - WherePart: a SQL predicate on j.* / f.* (ISSN, exact, prefix, LIKE-fallback).
-//   - FtsPart:   an FTS5 MATCH phrase with optional per-keyword LIKE post-filter (f=3 suffix).
-// Keeping them distinct lets the main assembler drive the FTS branch from
-// `FROM journals_fts JOIN journals`, which is the only reliable way to pin the
-// planner to an FTS-driven execution (an `IN (SELECT rowid FROM fts MATCH ?)`
-// subquery was tried and regressed to a journals full scan — see CLAUDE.md).
 type WherePart = { sql: string; bindings: unknown[] };
-type FtsPart = { phrase: string; suffixSql: string | null; suffixBindings: unknown[] };
-type KeywordMatch = {
-  jcrWhere: WherePart | null;
-  jcrFts: FtsPart | null;
-  fenquWhere: WherePart | null;
-  fenquFts: FtsPart | null;
-};
+type FtsPart   = { phrase: string; suffixSql: string | null; suffixBindings: unknown[] };
+type Match     = { where: WherePart | null; fts: FtsPart | null };
 
-// Name-mode column selector shared by exact / prefix / suffix paths.
 function nameCols(isAbbr: string | null): string[] {
   if (isAbbr === 'true' || isAbbr === '1')  return ['qabbr'];
   if (isAbbr === 'false' || isAbbr === '0') return ['qname'];
   return ['qname', 'qabbr'];
 }
 
-// fenqu has no qabbr — is_abbr forcing abbr-only makes the fenqu arm vacuous.
-function fenquNameEligible(isAbbr: string | null): boolean {
-  return isAbbr !== 'true' && isAbbr !== '1';
-}
-
 function ftsColFilter(cols: string[]): string {
   return cols.length === 1 ? `{${cols[0]}}` : `{${cols.join(' ')}}`;
 }
 
-function emptyMatch(): KeywordMatch {
-  return { jcrWhere: null, jcrFts: null, fenquWhere: null, fenquFts: null };
-}
-
+// Build match fragments for a single keyword against ONE table (journals or medline).
+// `tblAlias` is the SQL alias used in the caller's FROM clause (always single-letter so
+// substitutions stay stable). ISSN mode is table-agnostic — both journals and medline
+// have issn/eissn columns with identical semantics.
 function buildKeywordMatch(
   kw: string,
+  tblAlias: string,
   isAbbr: string | null,
   isEissn: string | null,
   f: string | null,
-): KeywordMatch {
-  // ── ISSN mode (exact) ───────────────────────────────────────────────
+): Match {
+  // ── ISSN mode ───────────────────────────────────────────────────────
   if (ISSN_RE.test(kw)) {
-    const out = emptyMatch();
     if (isEissn === 'true' || isEissn === '1') {
-      out.jcrWhere   = { sql: 'j.eissn = ?', bindings: [kw] };
-      out.fenquWhere = { sql: 'f.eissn = ?', bindings: [kw] };
-    } else if (isEissn === 'false' || isEissn === '0') {
-      out.jcrWhere   = { sql: 'j.issn = ?', bindings: [kw] };
-      out.fenquWhere = { sql: 'f.issn = ?', bindings: [kw] };
-    } else {
-      out.jcrWhere   = { sql: '(j.issn = ? OR j.eissn = ?)', bindings: [kw, kw] };
-      out.fenquWhere = { sql: '(f.issn = ? OR f.eissn = ?)', bindings: [kw, kw] };
+      return { where: { sql: `${tblAlias}.eissn = ?`, bindings: [kw] }, fts: null };
     }
-    return out;
+    if (isEissn === 'false' || isEissn === '0') {
+      return { where: { sql: `${tblAlias}.issn = ?`, bindings: [kw] }, fts: null };
+    }
+    return { where: { sql: `(${tblAlias}.issn = ? OR ${tblAlias}.eissn = ?)`, bindings: [kw, kw] }, fts: null };
   }
 
-  // ── Name mode ───────────────────────────────────────────────────────
-  const fqOk = fenquNameEligible(isAbbr);
+  // ── Name / Abbr mode ────────────────────────────────────────────────
   const cols = nameCols(isAbbr);
-  const out = emptyMatch();
 
-  // Substring (f=2) / suffix (f=3): FTS5 trigram, with LIKE post-filter for suffix.
-  // Input validation guarantees kw.length >= 3, so the trigram tokenizer always applies.
+  // Substring (f=2) / suffix (f=3): FTS5 trigram, optional LIKE post-filter for suffix.
   if (f === '2' || f === '3') {
-    const phrase = ftsPhrase(kw);
-    const jcrPhrase = `${ftsColFilter(cols)}: ${phrase}`;
-
-    let jcrSuffixSql: string | null = null;
-    const jcrSuffixBindings: unknown[] = [];
+    const phrase = `${ftsColFilter(cols)}: ${ftsPhrase(kw)}`;
+    let suffixSql: string | null = null;
+    const suffixBindings: unknown[] = [];
     if (f === '3') {
       const pat = `%${escapeLike(kw)}`;
-      const parts = cols.map(c => `j.${c} LIKE ? ESCAPE '\\'`);
-      jcrSuffixSql = parts.length === 1 ? parts[0] : `(${parts.join(' OR ')})`;
-      for (const _ of cols) jcrSuffixBindings.push(pat);
+      const parts = cols.map(c => `${tblAlias}.${c} LIKE ? ESCAPE '\\'`);
+      suffixSql = parts.length === 1 ? parts[0] : `(${parts.join(' OR ')})`;
+      for (const _ of cols) suffixBindings.push(pat);
     }
-    out.jcrFts = { phrase: jcrPhrase, suffixSql: jcrSuffixSql, suffixBindings: jcrSuffixBindings };
-
-    if (fqOk) {
-      let fqSuffixSql: string | null = null;
-      const fqSuffixBindings: unknown[] = [];
-      if (f === '3') {
-        fqSuffixSql = `f.qname LIKE ? ESCAPE '\\'`;
-        fqSuffixBindings.push(`%${escapeLike(kw)}`);
-      }
-      out.fenquFts = { phrase: `{qname}: ${phrase}`, suffixSql: fqSuffixSql, suffixBindings: fqSuffixBindings };
-    }
-    return out;
+    return { where: null, fts: { phrase, suffixSql, suffixBindings } };
   }
 
-  // Prefix (f=1) — half-open range scan. Must not use LIKE ESCAPE: SQLite disables
-  // the LIKE→range-scan optimization whenever ESCAPE is present, turning a B-tree
-  // lookup into a full scan of every indexed column.
+  // Prefix (f=1) — half-open range scan so SQLite keeps the B-tree range plan.
   if (f === '1') {
     const hi = prefixUpperBound(kw);
-    const parts = cols.map(c => `(j.${c} >= ? AND j.${c} < ?)`);
-    const jcrSql = parts.length === 1 ? parts[0] : `(${parts.join(' OR ')})`;
-    const jcrBindings: unknown[] = [];
-    for (const _ of cols) jcrBindings.push(kw, hi);
-    out.jcrWhere = { sql: jcrSql, bindings: jcrBindings };
-
-    if (fqOk) {
-      out.fenquWhere = { sql: `(f.qname >= ? AND f.qname < ?)`, bindings: [kw, hi] };
-    }
-    return out;
+    const parts = cols.map(c => `(${tblAlias}.${c} >= ? AND ${tblAlias}.${c} < ?)`);
+    const sql = parts.length === 1 ? parts[0] : `(${parts.join(' OR ')})`;
+    const bindings: unknown[] = [];
+    for (const _ of cols) bindings.push(kw, hi);
+    return { where: { sql, bindings }, fts: null };
   }
 
   // Exact
-  const parts = cols.map(c => `j.${c} = ?`);
-  const jcrSql = parts.length === 1 ? parts[0] : `(${parts.join(' OR ')})`;
-  const jcrBindings: unknown[] = cols.map(() => kw);
-  out.jcrWhere = { sql: jcrSql, bindings: jcrBindings };
-
-  if (fqOk) {
-    out.fenquWhere = { sql: `f.qname = ?`, bindings: [kw] };
-  }
-  return out;
+  const parts = cols.map(c => `${tblAlias}.${c} = ?`);
+  const sql = parts.length === 1 ? parts[0] : `(${parts.join(' OR ')})`;
+  const bindings: unknown[] = cols.map(() => kw);
+  return { where: { sql, bindings }, fts: null };
 }
 
 function combineWheres(parts: WherePart[]): WherePart | null {
@@ -248,20 +145,14 @@ function combineWheres(parts: WherePart[]): WherePart | null {
   };
 }
 
-// FTS5 OR-combines multiple MATCH phrases inside a single MATCH expression —
-// `{cols}: "a" OR {cols}: "b"` matches any row containing either phrase. Suffix
-// post-filters (f=3) OR-combine at the SQL level: any row whose chosen column
-// ends with any of the keywords. FTS index handles the prefix-narrowing; the
-// LIKE filter tightens it to true suffixes.
-//
-// The returned `matchPredicate` uses the unaliased FTS table name (MATCH's
-// left-hand side is technically a hidden table-name column reference in FTS5,
-// and SQLite's docs only document the unaliased form). The assembler writes
-// `FROM <ftsTable> JOIN <base> b ON b.id = <ftsTable>.rowid WHERE ...` so the
-// FTS table is never aliased.
+// FTS5 OR-combines multiple MATCH phrases inside a single MATCH expression.
+// Suffix post-filters OR-combine at the SQL level. The returned `matchPredicate`
+// uses the unaliased FTS table name — MATCH's left-hand side is technically a
+// hidden table-name column reference in FTS5, and SQLite's docs only commit to
+// supporting the unaliased form.
 function combineFts(
   parts: FtsPart[],
-  ftsTable: 'journals_fts' | 'fenqu_fts',
+  ftsTable: 'journals_fts' | 'medline_fts',
 ): { matchPredicate: string; bindings: unknown[] } | null {
   if (parts.length === 0) return null;
   const combinedPhrase = parts.map(p => p.phrase).join(' OR ');
@@ -280,6 +171,261 @@ function combineFts(
     matchPredicate += ` AND ${sfx}`;
   }
   return { matchPredicate, bindings };
+}
+
+// ── Main (journals) output projection ──────────────────────────────────
+// Always emits nlm_id column (NULL on main path) so the row shape is uniform
+// between main and medline paths, letting the Worker merge transparently.
+
+function journalsProjection(showAll: boolean): string {
+  if (showAll) {
+    return (
+      'j.qname AS _sortkey, 0 AS _src, ' +
+      'j.rank AS rank, j.name AS name, j.abbr AS abbr, j.publisher AS publisher, ' +
+      'j.issn AS issn, j.eissn AS eissn, ' +
+      'j.total_cites AS total_cites, j.total_articles AS total_articles, j.citable_items AS citable_items, ' +
+      'j.cited_half_life AS cited_half_life, j.citing_half_life AS citing_half_life, ' +
+      'j.jif_2024 AS jif_2024, j.five_year_jif AS five_year_jif, ' +
+      'j.jif_without_self_cites AS jif_without_self_cites, j.jci AS jci, ' +
+      'j.jif_quartile AS jif_quartile, j.jif_rank AS jif_rank, ' +
+      'j.fenqu AS fenqu, j.is_top AS is_top, ' +
+      'j.dalei_en AS dalei_en, j.dalei_zh AS dalei_zh, j.xiaolei_info AS xiaolei_info, ' +
+      'j.db_source AS db_source, j.lang AS lang, ' +
+      'NULL AS nlm_id'
+    );
+  }
+  return (
+    'j.qname AS _sortkey, 0 AS _src, ' +
+    'j.name AS name, j.abbr AS abbr, ' +
+    'j.jif_2024 AS jif_2024, j.jif_quartile AS jif_quartile, ' +
+    'j.fenqu AS fenqu, j.is_top AS is_top'
+  );
+}
+
+// ── Medline output projection ──────────────────────────────────────────
+// Rows are medline-sourced, left-joined to journals via journals_id. For linked
+// rows, journals columns come from j.*; for orphans (journals_id IS NULL), they
+// fall back to medline's own fields for name / abbr / issn / eissn, and JCR/Fenqu
+// specific fields stay NULL. nlm_id always comes from the medline row.
+
+function medlineProjection(showAll: boolean): string {
+  if (showAll) {
+    return (
+      'COALESCE(j.qname, h.m_qname) AS _sortkey, 1 AS _src, ' +
+      'j.rank AS rank, ' +
+      'COALESCE(j.name,  h.m_name) AS name, ' +
+      'COALESCE(j.abbr,  h.m_abbr) AS abbr, ' +
+      'j.publisher AS publisher, ' +
+      'COALESCE(j.issn,  h.m_issn)  AS issn, ' +
+      'COALESCE(j.eissn, h.m_eissn) AS eissn, ' +
+      'j.total_cites AS total_cites, j.total_articles AS total_articles, j.citable_items AS citable_items, ' +
+      'j.cited_half_life AS cited_half_life, j.citing_half_life AS citing_half_life, ' +
+      'j.jif_2024 AS jif_2024, j.five_year_jif AS five_year_jif, ' +
+      'j.jif_without_self_cites AS jif_without_self_cites, j.jci AS jci, ' +
+      'j.jif_quartile AS jif_quartile, j.jif_rank AS jif_rank, ' +
+      'j.fenqu AS fenqu, j.is_top AS is_top, ' +
+      'j.dalei_en AS dalei_en, j.dalei_zh AS dalei_zh, j.xiaolei_info AS xiaolei_info, ' +
+      'j.db_source AS db_source, j.lang AS lang, ' +
+      'h.nlm_id AS nlm_id'
+    );
+  }
+  return (
+    'COALESCE(j.qname, h.m_qname) AS _sortkey, 1 AS _src, ' +
+    'COALESCE(j.name, h.m_name) AS name, ' +
+    'COALESCE(j.abbr, h.m_abbr) AS abbr, ' +
+    'j.jif_2024 AS jif_2024, j.jif_quartile AS jif_quartile, ' +
+    'j.fenqu AS fenqu, j.is_top AS is_top'
+  );
+}
+
+// ── Main query builder ─────────────────────────────────────────────────
+// Single-table journals search. Two SELECTs UNION'd only if the query mixes
+// FTS and non-FTS keywords (e.g. one ISSN + one f=2). The FTS JOIN shape is
+// pinned so the planner stays on the FTS-driven plan (see CLAUDE.md FTS
+// planner invariant).
+function buildMainSql(
+  jWheres: WherePart[],
+  jFtses: FtsPart[],
+  showAll: boolean,
+): { sql: string; bindings: unknown[] } {
+  const proj = journalsProjection(showAll);
+  const subs: string[] = [];
+  const bindings: unknown[] = [];
+
+  const ftsCombined = combineFts(jFtses, 'journals_fts');
+  if (ftsCombined) {
+    subs.push(
+      `SELECT ${proj}
+     FROM journals_fts JOIN journals j ON j.id = journals_fts.rowid
+     WHERE ${ftsCombined.matchPredicate}`
+    );
+    bindings.push(...ftsCombined.bindings);
+  }
+  const whereCombined = combineWheres(jWheres);
+  if (whereCombined) {
+    subs.push(
+      `SELECT ${proj}
+     FROM journals j WHERE ${whereCombined.sql}`
+    );
+    bindings.push(...whereCombined.bindings);
+  }
+
+  const cte = subs.length > 1 ? subs.join('\n  UNION\n  ') : (subs[0] ?? `SELECT ${proj} FROM journals j WHERE 0`);
+
+  const sql =
+`WITH hits AS MATERIALIZED (
+  ${cte}
+)
+SELECT *, COUNT(*) OVER() AS _total
+FROM hits
+ORDER BY _sortkey ASC
+LIMIT ? OFFSET ?`;
+
+  return { sql, bindings };
+}
+
+// ── Medline query builder ──────────────────────────────────────────────
+// Two CTEs: `med_hits` materializes raw medline matches (with m_* aliases used
+// by the projection COALESCE); `dedup` collapses multiple medline aliases that
+// point to the same journals_id to a single representative row.
+//
+// `show_all=0` pushes `journals_id IS NOT NULL` into the med_hits WHERE so the
+// planner can use idx_med_journals_id to skip orphan rows at the source,
+// dedup collapses to a single GROUP BY, and the outer JOIN can be an INNER
+// JOIN (seed guarantees every non-null journals_id has a matching journals row).
+// `show_all=1` keeps orphans: dedup keeps the UNION ALL branch and the join
+// stays LEFT so orphan medline fields fall through the COALESCE in projection.
+function buildMedlineSql(
+  mWheres: WherePart[],
+  mFtses: FtsPart[],
+  showAll: boolean,
+): { sql: string; bindings: unknown[] } {
+  const proj = medlineProjection(showAll);
+  const subs: string[] = [];
+  const bindings: unknown[] = [];
+  const notOrphan = showAll ? '' : ' AND m.journals_id IS NOT NULL';
+
+  const ftsCombined = combineFts(mFtses, 'medline_fts');
+  if (ftsCombined) {
+    subs.push(
+      `SELECT m.id AS m_id, m.journals_id AS journals_id, m.qname AS m_qname,
+            m.name AS m_name, m.abbr AS m_abbr,
+            m.issn AS m_issn, m.eissn AS m_eissn, m.nlm_id AS nlm_id
+     FROM medline_fts JOIN medline m ON m.id = medline_fts.rowid
+     WHERE ${ftsCombined.matchPredicate}${notOrphan}`
+    );
+    bindings.push(...ftsCombined.bindings);
+  }
+  const whereCombined = combineWheres(mWheres);
+  if (whereCombined) {
+    subs.push(
+      `SELECT m.id AS m_id, m.journals_id AS journals_id, m.qname AS m_qname,
+            m.name AS m_name, m.abbr AS m_abbr,
+            m.issn AS m_issn, m.eissn AS m_eissn, m.nlm_id AS nlm_id
+     FROM medline m WHERE ${whereCombined.sql}${notOrphan}`
+    );
+    bindings.push(...whereCombined.bindings);
+  }
+
+  const medHitsCte = subs.length > 1 ? subs.join('\n  UNION\n  ') : (subs[0] ?? `SELECT NULL AS m_id, NULL AS journals_id, NULL AS m_qname, NULL AS m_name, NULL AS m_abbr, NULL AS m_issn, NULL AS m_eissn, NULL AS nlm_id WHERE 0`);
+
+  const dedupCte = showAll
+    ? `SELECT MIN(m_id) AS m_id FROM med_hits WHERE journals_id IS NOT NULL GROUP BY journals_id
+  UNION ALL
+  SELECT m_id FROM med_hits WHERE journals_id IS NULL`
+    : `SELECT MIN(m_id) AS m_id FROM med_hits GROUP BY journals_id`;
+
+  const joinKind = showAll ? 'LEFT JOIN' : 'JOIN';
+
+  const sql =
+`WITH med_hits AS MATERIALIZED (
+  ${medHitsCte}
+),
+dedup AS (
+  ${dedupCte}
+),
+mapped AS (
+  SELECT ${proj}
+  FROM dedup d
+  JOIN med_hits h ON h.m_id = d.m_id
+  ${joinKind} journals j ON j.id = h.journals_id
+)
+SELECT *, COUNT(*) OVER() AS _total
+FROM mapped
+ORDER BY _sortkey ASC
+LIMIT ? OFFSET ?`;
+
+  return { sql, bindings };
+}
+
+// Separate count query for the rare page-beyond-last case: same CTE shape
+// but projects COUNT(*) only, keeping the hot path a single round-trip.
+function buildMainCountSql(jWheres: WherePart[], jFtses: FtsPart[]): { sql: string; bindings: unknown[] } {
+  const subs: string[] = [];
+  const bindings: unknown[] = [];
+
+  const ftsCombined = combineFts(jFtses, 'journals_fts');
+  if (ftsCombined) {
+    subs.push(
+      `SELECT j.id AS j_id
+     FROM journals_fts JOIN journals j ON j.id = journals_fts.rowid
+     WHERE ${ftsCombined.matchPredicate}`
+    );
+    bindings.push(...ftsCombined.bindings);
+  }
+  const whereCombined = combineWheres(jWheres);
+  if (whereCombined) {
+    subs.push(`SELECT j.id AS j_id FROM journals j WHERE ${whereCombined.sql}`);
+    bindings.push(...whereCombined.bindings);
+  }
+  const cte = subs.length > 1 ? subs.join('\n  UNION\n  ') : (subs[0] ?? `SELECT NULL AS j_id WHERE 0`);
+
+  return { sql: `WITH hits AS MATERIALIZED (${cte}) SELECT COUNT(*) AS total FROM hits`, bindings };
+}
+
+function buildMedlineCountSql(
+  mWheres: WherePart[],
+  mFtses: FtsPart[],
+  showAll: boolean,
+): { sql: string; bindings: unknown[] } {
+  const subs: string[] = [];
+  const bindings: unknown[] = [];
+  const notOrphan = showAll ? '' : ' AND m.journals_id IS NOT NULL';
+
+  const ftsCombined = combineFts(mFtses, 'medline_fts');
+  if (ftsCombined) {
+    subs.push(
+      `SELECT m.id AS m_id, m.journals_id AS journals_id
+     FROM medline_fts JOIN medline m ON m.id = medline_fts.rowid
+     WHERE ${ftsCombined.matchPredicate}${notOrphan}`
+    );
+    bindings.push(...ftsCombined.bindings);
+  }
+  const whereCombined = combineWheres(mWheres);
+  if (whereCombined) {
+    subs.push(`SELECT m.id AS m_id, m.journals_id AS journals_id FROM medline m WHERE ${whereCombined.sql}${notOrphan}`);
+    bindings.push(...whereCombined.bindings);
+  }
+  const medHitsCte = subs.length > 1 ? subs.join('\n  UNION\n  ') : (subs[0] ?? `SELECT NULL AS m_id, NULL AS journals_id WHERE 0`);
+
+  // show_all=0: single GROUP BY (no orphans exist in med_hits); outer COUNT is
+  // just over dedup. show_all=1: keep UNION ALL split so orphans are counted.
+  if (!showAll) {
+    return {
+      sql: `WITH med_hits AS MATERIALIZED (${medHitsCte})
+SELECT COUNT(*) AS total FROM (SELECT MIN(m_id) AS m_id FROM med_hits GROUP BY journals_id)`,
+      bindings,
+    };
+  }
+  const sql =
+`WITH med_hits AS MATERIALIZED (${medHitsCte}),
+dedup AS (
+  SELECT MIN(m_id) AS m_id FROM med_hits WHERE journals_id IS NOT NULL GROUP BY journals_id
+  UNION ALL
+  SELECT m_id FROM med_hits WHERE journals_id IS NULL
+)
+SELECT COUNT(*) AS total FROM dedup d JOIN med_hits h ON h.m_id = d.m_id`;
+  return { sql, bindings };
 }
 
 export default {
@@ -319,6 +465,8 @@ export default {
 
       const isAbbr  = params.get('is_abbr');
       const isEissn = params.get('is_eissn');
+      const isMedRaw = params.get('is_med');
+      const isMed   = isMedRaw === '1' || isMedRaw === 'true';
       const f       = params.get('f');
       const showAll = params.get('show_all') === '1';
       const page    = Math.max(1, parseInt(params.get('page') ?? '1', 10) || 1);
@@ -342,140 +490,58 @@ export default {
 
       const offset = (page - 1) * pageSize;
 
-      const jcrWheres: WherePart[] = [];
-      const jcrFtses:  FtsPart[]   = [];
-      const fqWheres:  WherePart[] = [];
-      const fqFtses:   FtsPart[]   = [];
+      // Build per-keyword matches for BOTH tables upfront. Cheap — reused across
+      // main and potential medline fallback paths.
+      const jWheres: WherePart[] = [];
+      const jFtses:  FtsPart[]   = [];
+      const mWheres: WherePart[] = [];
+      const mFtses:  FtsPart[]   = [];
       for (const kw of keywords) {
-        const m = buildKeywordMatch(kw, isAbbr, isEissn, f);
-        if (m.jcrWhere)   jcrWheres.push(m.jcrWhere);
-        if (m.jcrFts)     jcrFtses.push(m.jcrFts);
-        if (m.fenquWhere) fqWheres.push(m.fenquWhere);
-        if (m.fenquFts)   fqFtses.push(m.fenquFts);
+        const mj = buildKeywordMatch(kw, 'j', isAbbr, isEissn, f);
+        if (mj.where) jWheres.push(mj.where);
+        if (mj.fts)   jFtses.push(mj.fts);
+        const mm = buildKeywordMatch(kw, 'm', isAbbr, isEissn, f);
+        if (mm.where) mWheres.push(mm.where);
+        if (mm.fts)   mFtses.push(mm.fts);
       }
 
-      const jcrCteCols = showAll ? JCR_CTE_COLS_ALL : JCR_CTE_COLS_DEFAULT;
-      const jcrOut     = showAll ? JCR_OUT_ALL      : JCR_OUT_DEFAULT;
-      const fqOut      = showAll ? FQ_OUT_ALL       : FQ_OUT_DEFAULT;
+      // ── Runner ─────────────────────────────────────────────────────────
+      const runMain = async () => {
+        const { sql, bindings } = buildMainSql(jWheres, jFtses, showAll);
+        const { results } = await env.DB.prepare(sql).bind(...bindings, pageSize, offset).all<Record<string, unknown>>();
+        const rows = results ?? [];
+        let total = rows.length > 0 ? Number(rows[0]._total ?? 0) : 0;
+        if (rows.length === 0 && page > 1) {
+          const { sql: cs, bindings: cb } = buildMainCountSql(jWheres, jFtses);
+          const cr = await env.DB.prepare(cs).bind(...cb).first<{ total: number }>();
+          total = cr?.total ?? 0;
+        }
+        return { rows, total };
+      };
 
-      // ── Build jcr_hits CTE body ─────────────────────────────────────────
-      // FTS and non-FTS keywords produce structurally different FROM clauses, so
-      // we emit each as its own SELECT and UNION them when both are present.
-      // Using UNION (not UNION ALL) dedupes the rare mixed case where the same
-      // journal matches both an ISSN lookup and an FTS substring hit.
-      const jcrSubs: string[] = [];
-      const jcrBindings: unknown[] = [];
+      const runMedline = async () => {
+        const { sql, bindings } = buildMedlineSql(mWheres, mFtses, showAll);
+        const { results } = await env.DB.prepare(sql).bind(...bindings, pageSize, offset).all<Record<string, unknown>>();
+        const rows = results ?? [];
+        let total = rows.length > 0 ? Number(rows[0]._total ?? 0) : 0;
+        if (rows.length === 0 && page > 1) {
+          const { sql: cs, bindings: cb } = buildMedlineCountSql(mWheres, mFtses, showAll);
+          const cr = await env.DB.prepare(cs).bind(...cb).first<{ total: number }>();
+          total = cr?.total ?? 0;
+        }
+        return { rows, total };
+      };
 
-      const jcrFtsCombined = combineFts(jcrFtses, 'journals_fts');
-      if (jcrFtsCombined) {
-        jcrSubs.push(
-          `SELECT j.id AS j_id, j.fenqu_id AS f_link, ${jcrCteCols}
-     FROM journals_fts JOIN journals j ON j.id = journals_fts.rowid
-     WHERE ${jcrFtsCombined.matchPredicate}`
-        );
-        jcrBindings.push(...jcrFtsCombined.bindings);
-      }
-      const jcrWhereCombined = combineWheres(jcrWheres);
-      if (jcrWhereCombined) {
-        jcrSubs.push(
-          `SELECT j.id AS j_id, j.fenqu_id AS f_link, ${jcrCteCols}
-     FROM journals j WHERE ${jcrWhereCombined.sql}`
-        );
-        jcrBindings.push(...jcrWhereCombined.bindings);
-      }
-      // Every keyword always produces a jcr part (ISSN / name both match j.*),
-      // so jcrSubs is non-empty in practice. Guard anyway with a never-matches
-      // sentinel so the CTE remains structurally valid.
-      const jcrCteBody = jcrSubs.length > 0
-        ? jcrSubs.join('\n  UNION\n  ')
-        : `SELECT NULL AS j_id, NULL AS f_link, ${jcrCteCols.replace(/j\.\w+/g, 'NULL')} WHERE 0`;
-
-      // ── Build fenqu arm ─────────────────────────────────────────────────
-      // Same FTS / where split. Each sub-arm filters out journals-linked rows
-      // via `NOT IN jcr_hits.f_link` to preserve the dedup guarantee. We store
-      // just the FROM+WHERE bodies so the count-fallback path can reuse them
-      // with a COUNT(*) projection instead of the full output column list.
-      const ANTI_JOIN = `f.id NOT IN (SELECT f_link FROM jcr_hits WHERE f_link IS NOT NULL)`;
-      const fqBodies: string[] = [];
-      const fqBindings: unknown[] = [];
-
-      const fqFtsCombined = combineFts(fqFtses, 'fenqu_fts');
-      if (fqFtsCombined) {
-        fqBodies.push(
-          `FROM fenqu_fts JOIN fenqu f ON f.id = fenqu_fts.rowid
-     WHERE ${fqFtsCombined.matchPredicate} AND ${ANTI_JOIN}`
-        );
-        fqBindings.push(...fqFtsCombined.bindings);
-      }
-      const fqWhereCombined = combineWheres(fqWheres);
-      if (fqWhereCombined) {
-        fqBodies.push(
-          `FROM fenqu f WHERE ${fqWhereCombined.sql} AND ${ANTI_JOIN}`
-        );
-        fqBindings.push(...fqWhereCombined.bindings);
-      }
-
-      // fenqu arm may be empty (e.g. is_abbr=1 strips the fenqu side entirely).
-      // In that case the merged CTE is just arm A, no UNION ALL needed.
-      const buildFenquArm = (projection: string): string =>
-        fqBodies.length === 0
-          ? ''
-          : '\n  UNION ALL\n  ' +
-            fqBodies
-              .map(body => `SELECT ${projection} ${body}`)
-              .join('\n  UNION\n  ');
-
-      const sql =
-`WITH jcr_hits AS MATERIALIZED (
-  ${jcrCteBody}
-),
-merged AS (
-  SELECT 0 AS _src, ${jcrOut}
-  FROM jcr_hits h
-  LEFT JOIN fenqu f ON f.id = h.f_link${buildFenquArm(`1 AS _src, ${fqOut}`)}
-)
-SELECT *, COUNT(*) OVER() AS _total
-FROM merged
-ORDER BY _src ASC, _sortkey ASC
-LIMIT ? OFFSET ?`;
-
-      const bindings: unknown[] = [
-        ...jcrBindings,
-        ...fqBindings,
-        pageSize,
-        offset,
-      ];
-
-      const { results } = await env.DB
-        .prepare(sql)
-        .bind(...bindings)
-        .all<Record<string, unknown>>();
-
-      const rows = results ?? [];
-      let total = rows.length > 0 ? Number(rows[0]._total ?? 0) : 0;
-
-      // Page-beyond-last returns 0 rows, losing COUNT(*) OVER(). Re-run the
-      // same CTE shape with a COUNT(*) projection — keeps the hot path a
-      // single round-trip and guarantees the count reflects the merged
-      // semantics (UNION-dedup in the fenqu arm, anti-join for journals).
-      if (rows.length === 0 && page > 1) {
-        const countSql =
-`WITH jcr_hits AS MATERIALIZED (
-  ${jcrCteBody}
-),
-merged AS (
-  SELECT 0 AS _src, h.j_id AS _id FROM jcr_hits h${buildFenquArm(`1 AS _src, f.id AS _id`)}
-)
-SELECT COUNT(*) AS total FROM merged`;
-        const countBindings: unknown[] = [
-          ...jcrBindings,
-          ...fqBindings,
-        ];
-        const countRow = await env.DB
-          .prepare(countSql)
-          .bind(...countBindings)
-          .first<{ total: number }>();
-        total = countRow?.total ?? 0;
+      // ── Dispatch: is_med=1 skips main; otherwise main first + fallback on total=0 (page=1 only).
+      let rows: Record<string, unknown>[];
+      let total: number;
+      if (isMed) {
+        ({ rows, total } = await runMedline());
+      } else {
+        ({ rows, total } = await runMain());
+        if (total === 0 && page === 1) {
+          ({ rows, total } = await runMedline());
+        }
       }
 
       const data = rows.map(r => {
