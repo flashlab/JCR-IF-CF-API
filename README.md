@@ -60,11 +60,14 @@ Responses are cached for 24h at both the browser (`Cache-Control: public, max-ag
     }
   ],
   "total": 1,
+  "med_hit": false,
   "page": 1,
   "page_size": 20,
   "total_pages": 1
 }
 ```
+
+`med_hit` is `true` iff the medline query actually executed and matched ≥ 1 row anywhere in medline — **including orphan rows** that `show_all=0` would otherwise hide from `data`. So `med_hit=true` with `total=0` is a valid combination: it tells you the keyword matched an NLM-only record that you can surface by re-querying with `show_all=1`. `false` when the main `journals` table satisfied the query, or when medline ran but matched nothing.
 
 For medline-orphan rows returned under `show_all=1`, JCR/Fenqu-derived fields are `null` and `nlm_id` is populated.
 

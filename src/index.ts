@@ -383,6 +383,36 @@ function buildMainCountSql(jWheres: WherePart[], jFtses: FtsPart[]): { sql: stri
   return { sql: `WITH hits AS MATERIALIZED (${cte}) SELECT COUNT(*) AS total FROM hits`, bindings };
 }
 
+// Orphan-aware existence probe: under `show_all=0`, the medline data/count queries
+// push `journals_id IS NOT NULL` into med_hits, which hides orphan matches from the
+// visible result set. When the visible total is 0, this probe checks whether ANY
+// medline row (including orphans) matches — `EXISTS` short-circuits at the first
+// match so the cost is ≈1–2 rows_read regardless of orphan match count. The
+// `journals_id IS NOT NULL` filter is intentionally NOT applied here.
+function buildMedlineExistsSql(
+  mWheres: WherePart[],
+  mFtses: FtsPart[],
+): { sql: string; bindings: unknown[] } {
+  const parts: string[] = [];
+  const bindings: unknown[] = [];
+
+  const ftsCombined = combineFts(mFtses, 'medline_fts');
+  if (ftsCombined) {
+    parts.push(
+      `EXISTS(SELECT 1 FROM medline_fts JOIN medline m ON m.id = medline_fts.rowid WHERE ${ftsCombined.matchPredicate})`
+    );
+    bindings.push(...ftsCombined.bindings);
+  }
+  const whereCombined = combineWheres(mWheres);
+  if (whereCombined) {
+    parts.push(`EXISTS(SELECT 1 FROM medline m WHERE ${whereCombined.sql})`);
+    bindings.push(...whereCombined.bindings);
+  }
+
+  const expr = parts.length === 0 ? '0' : parts.join(' OR ');
+  return { sql: `SELECT (${expr}) AS hit`, bindings };
+}
+
 function buildMedlineCountSql(
   mWheres: WherePart[],
   mFtses: FtsPart[],
@@ -533,15 +563,29 @@ export default {
       };
 
       // ── Dispatch: is_med=1 skips main; otherwise main first + fallback on total=0 (page=1 only).
+      // medHit=true when the medline query actually executed AND matched ≥1 row.
       let rows: Record<string, unknown>[];
       let total: number;
+      let medHit = false;
       if (isMed) {
         ({ rows, total } = await runMedline());
+        medHit = total > 0;
       } else {
         ({ rows, total } = await runMain());
         if (total === 0 && page === 1) {
           ({ rows, total } = await runMedline());
+          medHit = total > 0;
         }
+      }
+      // Orphan-aware probe: medline ran AND visible total=0 AND show_all=0 means
+      // orphan matches may have been hidden by the `journals_id IS NOT NULL` push-down.
+      // EXISTS short-circuits → ≈1–2 extra rows_read, only on this rare path.
+      // Gate `(isMed || page === 1)` filters out the !isMed && page>1 case where
+      // fallback never fired and medline didn't run.
+      if (total === 0 && !showAll && (isMed || page === 1)) {
+        const { sql: es, bindings: eb } = buildMedlineExistsSql(mWheres, mFtses);
+        const er = await env.DB.prepare(es).bind(...eb).first<{ hit: number }>();
+        medHit = (er?.hit ?? 0) > 0;
       }
 
       const data = rows.map(r => {
@@ -559,6 +603,7 @@ export default {
         query: q,
         data,
         total,
+        med_hit: medHit,
         page,
         page_size: pageSize,
         total_pages: Math.ceil(total / pageSize),

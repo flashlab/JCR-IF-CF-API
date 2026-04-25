@@ -60,6 +60,7 @@ ISSN and EISSN are stored as UPPERCASE in both tables.
 1. If `is_med=1`: run medline query only.
 2. Else: run main query. If `total=0` and `page=1`, run medline query as fallback.
 3. Both queries emit identical row shapes (main path fills `nlm_id` with `NULL`; medline path fills missing journals fields via `COALESCE(j.*, m_*)` for orphan rows when `show_all=1`).
+4. Response carries a top-level `med_hit: boolean` set iff the medline query actually executed AND matched ≥1 row in medline (including orphans). Default path is post-hoc bookkeeping (`medHit = total > 0` inside each medline-running branch — never in the main-hit branch). When the visible total is 0 under `show_all=0`, an extra `SELECT EXISTS(...)` probe runs against medline (orphan filter intentionally absent) to detect orphan-only matches that the data query's `journals_id IS NOT NULL` push-down would otherwise hide. `EXISTS` short-circuits, so the probe is ≈1–2 rows_read + 1 D1 round-trip on this rare path only. Hot paths (main hit, or medline with ≥1 visible row, or `show_all=1`) pay zero overhead.
 
 Ordering is `_sortkey ASC` — uppercased name (main's `j.qname` or medline's `COALESCE(j.qname, h.m_qname)`). `COUNT(*) OVER()` inside the top SELECT provides the total in the same round-trip; a separate count query runs only when the requested page is beyond the last populated page.
 
