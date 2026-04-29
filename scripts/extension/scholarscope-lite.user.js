@@ -42,6 +42,7 @@
     const JCR_ENDPOINT = 'https://jcr-query-api.4cf.workers.dev/api/jcr';
     const ICITE_ENDPOINT = 'https://icite.od.nih.gov/api/pubs';
     const EFETCH_ENDPOINT = 'https://eutils.ncbi.nlm.nih.gov/entrez/eutils/efetch.fcgi';
+    const JCR_DEFAULT_PARAMS = { is_abbr: '1', is_med: '1' };
 
     // =========================================================================
     // Utilities
@@ -167,10 +168,15 @@
     function buildJcrUrl(q, extraParams) {
         const u = new URL(JCR_ENDPOINT);
         u.searchParams.set('q', q);
-        u.searchParams.set('is_abbr', '1');
-        u.searchParams.set('is_med', '1');
-        u.searchParams.set('page_size', '5');
-        if (extraParams) for (const k in extraParams) u.searchParams.set(k, extraParams[k]);
+        const params = Object.assign({}, JCR_DEFAULT_PARAMS);
+        if (extraParams) {
+            for (const k in extraParams) {
+                const v = extraParams[k];
+                if (v == null || v === '') delete params[k];
+                else params[k] = String(v);
+            }
+        }
+        for (const k in params) u.searchParams.set(k, params[k]);
         return u.toString();
     }
 
@@ -249,7 +255,15 @@
     }
 
     function jcrResultsModal(rows, highlightIdx, options) {
-        const headers = ['name', 'abbr', 'jif_2024', 'jif_quartile', 'fenqu', 'is_top'];
+        const baseHeaders = ['name', 'abbr', 'jif_2024', 'jif_quartile', 'fenqu', 'is_top'];
+        const headerSet = new Set(baseHeaders);
+        (rows || []).forEach((row) => {
+            if (!row) return;
+            Object.keys(row).forEach((key) => {
+                if (row[key] != null) headerSet.add(key);
+            });
+        });
+        const headers = Array.from(headerSet);
         const tbl = el('table', { class: 'Scholarscope_Modal_Table' });
         const thead = el('thead', {}, el('tr', {}, headers.map(h => el('th', {}, h))));
         tbl.appendChild(thead);
@@ -278,11 +292,7 @@
                 const cache = readJcrCache();
                 if (cache[cacheKey]) { delete cache[cacheKey]; writeJcrCache(cache); }
                 const result = await jcrLookup(origKw, { skipCache: true });
-                const quartileEl = factorEl.parentElement && factorEl.parentElement.querySelector(
-                    factorEl.classList.contains('Scholarscope_Appendix_Factor')
-                        ? '.Scholarscope_Appendix_Quartile'
-                        : '.Scholarscope_Quartile'
-                );
+                const quartileEl = getQuartileBadgeForFactor(factorEl);
                 applyJcrToBadges(factorEl, quartileEl, result, origKw);
                 hideModal();
                 if (isSearchResultsPage()) {
@@ -296,6 +306,220 @@
         buttonRow.appendChild(el('div', { class: 'Scholarscope_Modal_Close', onclick: hideModal }, '关闭'));
         wrap.appendChild(buttonRow);
         return wrap;
+    }
+
+    function getQuartileBadgeForFactor(factorEl) {
+        return factorEl.parentElement && factorEl.parentElement.querySelector(
+            factorEl.classList.contains('Scholarscope_Appendix_Factor')
+                ? '.Scholarscope_Appendix_Quartile'
+                : '.Scholarscope_Quartile'
+        );
+    }
+
+    function getMetaContent(name) {
+        const meta = document.querySelector(`meta[name="${name}"]`);
+        return meta && meta.content ? meta.content.trim() : '';
+    }
+
+    function getDetailJournalTitle() {
+        return getMetaContent('citation_journal_title');
+    }
+
+    function getManualLookupDefaultKeyword(factorEl) {
+        if (factorEl && factorEl.classList.contains('Scholarscope_Factor')) {
+            const title = getDetailJournalTitle();
+            if (title) return title;
+        }
+        return (factorEl && factorEl.dataset && factorEl.dataset.origKw) ? factorEl.dataset.origKw.trim() : '';
+    }
+
+    function buildManualLookupSelect(id, options) {
+        const select = el('select', { id, class: 'Scholarscope_DropDownSelect Scholarscope_DropDownControl' });
+        options.forEach((option) => {
+            select.appendChild(el('option', { value: option.value }, option.label));
+        });
+        return select;
+    }
+
+    function serializeManualLookupForm(form) {
+        const data = new FormData(form);
+        return Object.fromEntries(
+            Array.from(data.entries())   //.filter(([, value]) => String(value).trim() !== '')
+        );
+    }
+
+    function buildManualLookupField(labelText, control) {
+        return el('label', { class: 'Scholarscope_DropDownField' }, [
+            el('div', { class: 'Scholarscope_DropDownLabel' }, labelText),
+            control,
+        ]);
+    }
+
+    function ensureManualLookupDropdown() {
+        let dd = document.getElementById('Scholarscope_ManualLookupDropDown');
+        if (dd) return dd;
+
+        const keywordInput = el('input', {
+            id: 'Scholarscope_ManualLookupKeyword',
+            name: 'q',
+            class: 'Scholarscope_DropDownTextInput Scholarscope_DropDownControl',
+            type: 'text',
+            required: 'required',
+            minlength: '3',
+            placeholder: '全称/缩写/ISSN',
+        });
+        const searchMode = buildManualLookupSelect('Scholarscope_ManualLookupSearchMode', [
+            { value: '', label: '精确' },
+            { value: '1', label: '前缀' },
+            { value: '2', label: '模糊' },
+            { value: '3', label: '后缀' },
+        ]);
+        searchMode.name = 'f';
+        const isAbbr = buildManualLookupSelect('Scholarscope_ManualLookupIsAbbr', [
+            { value: '', label: '不限' },
+            { value: '1', label: '是' },
+            { value: '0', label: '否' },
+        ]);
+        isAbbr.name = 'is_abbr';
+        const pageNo = buildManualLookupSelect('Scholarscope_ManualLookupPageNo', [
+            { value: '', label: '1' },
+            { value: '2', label: '2' },
+            { value: '3', label: '3' },
+            { value: '4', label: '4' },
+            { value: '5', label: '5' },
+        ]);
+        pageNo.name = 'page';
+        const notMed = el('input', { name: 'is_med', type: 'checkbox', value: '0' });
+        const showAll = el('input', { name: 'show_all', type: 'checkbox', value: '1' });
+        const submit = el('button', { type: 'submit', class: 'Scholarscope_DropDownButton Scholarscope_DropDownButtonPrimary' }, '查询');
+        const reset = el('button', { type: 'reset', class: 'Scholarscope_DropDownButton Scholarscope_DropDownButtonDanger' }, '重置');
+
+        dd = el('form', {
+            id: 'Scholarscope_ManualLookupDropDown',
+            class: 'Scholarscope_DropDown notranslate',
+            style: 'display:none',
+            novalidate: 'novalidate',
+        }, [
+            el('div', { class: 'Scholarscope_DropDownTitle' }, 'JCR 手动查询'),
+            keywordInput, el('div', { class: 'Scholarscope_TermWrapper' }, [
+                buildManualLookupField('搜索模式', searchMode),
+                buildManualLookupField('缩写', isAbbr),
+                buildManualLookupField('页数', pageNo),
+            ]),
+            el('div', { class: 'Scholarscope_TermWrapper' }, [
+                el('label', { class: 'Scholarscope_DropDownInlineCheck Scholarscope_InlineCheck' }, [
+                    notMed,
+                    el('span', {}, '优先 JCR 数据库'),
+                ]),
+                el('label', { class: 'Scholarscope_DropDownInlineCheck Scholarscope_InlineCheck' }, [
+                    showAll,
+                    el('span', {}, '全部字段'),
+                ]),
+            ]),
+            el('div', { class: 'Scholarscope_DropDownHint' }, [
+                '参数详情查看',
+                el('a', { href: 'https://github.com/flashlab/JCR-IF-CF-API', target: '_blank', rel: 'noopener' }, 'flashlab/JCR-IF-CF-API')
+            ]),
+            el('div', { class: 'Scholarscope_DropDownButtonRow Scholarscope_ButtonRow' }, [submit, reset]),
+        ]);
+
+        dd.addEventListener('click', (ev) => ev.stopPropagation());
+        dd.addEventListener('submit', submitManualLookupForm);
+        // close.addEventListener('click', closeManualLookupDropdown);
+
+        document.body.appendChild(dd);
+        document.addEventListener('click', (ev) => {
+            const root = document.getElementById('Scholarscope_ManualLookupDropDown');
+            if (root && root.style.display === 'block' && !root.contains(ev.target)) closeManualLookupDropdown();
+        });
+        document.addEventListener('keydown', (ev) => {
+            if (ev.key === 'Escape') closeManualLookupDropdown();
+        });
+        return dd;
+    }
+
+    function positionManualLookupDropdown(dd, factorEl) {
+        const rect = factorEl.getBoundingClientRect();
+        const width = 340;
+        const gap = 8;
+        const maxLeft = window.scrollX + window.innerWidth - width - gap;
+        const left = Math.max(window.scrollX + gap, Math.min(window.scrollX + rect.left, maxLeft));
+        dd.style.top = `${window.scrollY + rect.bottom + gap}px`;
+        dd.style.left = `${left}px`;
+    }
+
+    function openManualLookupDropdown(factorEl) {
+        const dd = ensureManualLookupDropdown();
+        dd._factorEl = factorEl;
+        dd.querySelector('.Scholarscope_DropDownTitle').textContent = factorEl.classList.contains('Scholarscope_MedHit')
+            ? 'JCR 手动查询（MedLine 已收录）'
+            : 'JCR 手动查询';
+        const keywordInput = dd.querySelector('#Scholarscope_ManualLookupKeyword');
+        keywordInput.value = keywordInput.defaultValue = getManualLookupDefaultKeyword(factorEl);
+        positionManualLookupDropdown(dd, factorEl);
+        dd.style.display = 'block';
+        keywordInput.focus();
+        keywordInput.select();
+    }
+
+    function closeManualLookupDropdown() {
+        const dd = document.getElementById('Scholarscope_ManualLookupDropDown');
+        if (!dd) return;
+        // dd.reset();
+        dd.style.display = 'none';
+        dd._factorEl = null;
+        dd.dataset.busy = '0';
+        const submit = dd.querySelector('.Scholarscope_DropDownButtonPrimary');
+        if (submit) {
+            submit.textContent = '查询';
+            submit.style.pointerEvents = '';
+        }
+    }
+
+    async function submitManualLookupForm(ev) {
+        ev.preventDefault();
+        const dd = ensureManualLookupDropdown();
+        if (dd.dataset.busy === '1') return;
+        const factorEl = dd._factorEl;
+        if (!factorEl) return;
+
+        if (!dd.reportValidity()) {
+            return;
+        }
+
+        const { q: rawKeyword = '', ...extraParams } = serializeManualLookupForm(dd);
+        const keyword = String(rawKeyword).trim();
+        const submit = dd.querySelector('.Scholarscope_DropDownButtonPrimary');
+        dd.dataset.busy = '1';
+        submit.textContent = '查询中…';
+        submit.style.pointerEvents = 'none';
+
+        const result = await jcrLookup(keyword, { skipCache: true, extraParams });
+        const quartileEl = getQuartileBadgeForFactor(factorEl);
+        const origKw = factorEl.dataset.origKw || '';
+        const origNorm = String(origKw).trim().toLowerCase();
+        closeManualLookupDropdown();
+
+        if (!result.errored && result.data && result.data.length > 0) {
+            if (origNorm) jcrCacheSet(origNorm, { data: result.data, medHit: !!result.medHit });
+            applyJcrToBadges(factorEl, quartileEl, result, origKw || keyword);
+            if (isSearchResultsPage()) {
+                if (CFG.autoFilter) applyFilter(true);
+                if (CFG.autoSort) applySorting();
+            }
+            return;
+        }
+        if (!result.errored && result.medHit) {
+            if (origNorm) jcrCacheSet(origNorm, { data: [], medHit: true });
+            applyJcrToBadges(factorEl, quartileEl, result, origKw || keyword);
+            window.alert('已被 MedLine 收录，无 IF/分区数据。');
+            return;
+        }
+        if (result.errored) {
+            window.alert('查询失败：' + (result.error || ''));
+            return;
+        }
+        window.alert('未找到，请重试并调整关键词或搜索参数。');
     }
 
     // =========================================================================
@@ -369,54 +593,19 @@
         });
     }
 
-    async function handleManualLookupClick(factorEl) {
-        const isMedHit = factorEl.classList.contains('Scholarscope_MedHit');
-        const promptMsg = isMedHit
-            ? '此刊已被 MedLine 收录但 JCR/中科院分区表无记录。\n可调整关键词或追加 &f=1（前缀匹配）/ &f=2（子串匹配）重试：'
-            : '输入关键词，可选在末尾追加 &f=1（前缀匹配）或 &f=2（子串匹配）';
-        const raw = window.prompt(promptMsg, factorEl.dataset.origKw || '');
-        if (raw == null) return;
-        const m = String(raw).match(/^\s*(.*?)(?:&f=([12]))?\s*$/);
-        const keyword = (m && m[1] ? m[1] : '').trim();
-        const fParam = m && m[2];
-        if (!keyword) return;
-        const opts = { skipCache: true };
-        if (fParam) opts.extraParams = { f: fParam };
-        const result = await jcrLookup(keyword, opts);
-        const quartileEl = factorEl.parentElement && factorEl.parentElement.querySelector(
-            factorEl.classList.contains('Scholarscope_Appendix_Factor')
-                ? '.Scholarscope_Appendix_Quartile'
-                : '.Scholarscope_Quartile'
-        );
-        const origKw = factorEl.dataset.origKw || '';
-        const origNorm = String(origKw).trim().toLowerCase();
-        if (!result.errored && result.data && result.data.length > 0) {
-            if (origNorm) jcrCacheSet(origNorm, { data: result.data, medHit: !!result.medHit });
-            applyJcrToBadges(factorEl, quartileEl, result, keyword);
-            if (isSearchResultsPage()) {
-                if (CFG.autoFilter) applyFilter(true);
-                if (CFG.autoSort) applySorting();
-            }
-            return;
-        }
-        if (!result.errored && result.medHit) {
-            if (origNorm) jcrCacheSet(origNorm, { data: [], medHit: true });
-            applyJcrToBadges(factorEl, quartileEl, result, keyword);
-            window.alert('已被 MedLine 收录，无 IF/分区数据。');
-            return;
-        }
-        window.alert('未找到，请重试或调整关键词/追加 &f=1 或 &f=2。');
+    function handleManualLookupClick(factorEl) {
+        openManualLookupDropdown(factorEl);
     }
 
     function makeFactorBadge(cls) {
-        const e = el('div', { class: `${cls} notranslate`, title: '点击查看 JCR 详情' });
+        const e = el('div', { class: `${cls} Scholarscope_Badge Scholarscope_BadgeClickable notranslate`, title: '点击查看 JCR 详情' });
         e.textContent = '…';
         e.style.backgroundColor = '#616161';
         attachFactorClickHandler(e);
         return e;
     }
     function makeQuartileBadge(cls) {
-        const e = el('div', { class: `${cls} notranslate` });
+        const e = el('div', { class: `${cls} Scholarscope_Badge Scholarscope_BadgeClickable notranslate` });
         e.textContent = '…';
         e.style.backgroundColor = '#616161';
         return e;
@@ -426,13 +615,7 @@
     // Detail page
     // =========================================================================
     function getDetailJournalKeyword() {
-        const meta = document.querySelector('meta[name="citation_journal_title"]');
-        if (meta && meta.content) return meta.content.trim();
-        const abbr = document.querySelector('#full-view-journal-trigger');
-        if (abbr && abbr.textContent) return abbr.textContent.trim();
-        const btn = document.querySelector('.journal-actions button[title]');
-        if (btn && btn.getAttribute('title')) return btn.getAttribute('title').trim();
-        return '';
+        return getMetaContent('citation_publisher') || getDetailJournalTitle();
     }
 
     function getDetailPmid() {
@@ -446,11 +629,11 @@
         const articleCitation = heading.querySelector('.article-citation');
         if (!articleCitation || articleCitation.querySelector('#Scholarscope_JournalDetailFrame')) return;
 
-        const frame = el('div', { id: 'Scholarscope_JournalDetailFrame', class: 'notranslate' });
+        const frame = el('div', { id: 'Scholarscope_JournalDetailFrame', class: 'Scholarscope_JournalDetailFrame notranslate' });
 
         const pubTypeNode = heading.querySelector('.publication-type');
         if (pubTypeNode) {
-            const at = el('div', { class: 'Scholarscope_ArticleType' });
+            const at = el('div', { class: 'Scholarscope_ArticleType Scholarscope_Badge Scholarscope_BadgeBlue' });
             at.textContent = pubTypeNode.textContent.trim();
             pubTypeNode.remove();
             frame.appendChild(at);
@@ -564,7 +747,7 @@
         const frame = el('div', { class: 'Scholarscope_Appendix_JournalFrame notranslate' });
         frame.dataset.pmid = pmid;
 
-        const journalDiv = el('div', { class: 'Scholarscope_Appendix_Journal notranslate' });
+        const journalDiv = el('div', { class: 'Scholarscope_Appendix_Journal Scholarscope_Badge notranslate' });
         journalDiv.textContent = journalKw || '—';
         frame.appendChild(journalDiv);
 
@@ -574,13 +757,13 @@
         frame.appendChild(quartile);
 
         if (year) {
-            const yd = el('div', { class: 'Scholarscope_Appendix_Year' });
+            const yd = el('div', { class: 'Scholarscope_Appendix_Year Scholarscope_Badge Scholarscope_BadgeBlue' });
             yd.textContent = year;
             frame.appendChild(yd);
         }
 
         if (articleType) {
-            const at = el('div', { class: 'Scholarscope_Appendix_ArticleType notranslate' });
+            const at = el('div', { class: 'Scholarscope_Appendix_ArticleType Scholarscope_Badge Scholarscope_BadgeBlue notranslate' });
             at.textContent = articleType;
             frame.appendChild(at);
         }
@@ -716,10 +899,10 @@
         const anchor = document.querySelector('.top-wrapper') || document.querySelector('.search-results-view-switch') || document.querySelector('.results-amount-container');
         if (!anchor) return;
 
-        const bar = el('div', { id: 'Scholarscope_Toolbar', class: 'notranslate' });
-        const filterBtn = el('div', { id: 'Scholarscope_FilterButton', class: 'notranslate' }, '按条件筛选');
-        const sortBtn = el('div', { id: 'Scholarscope_SortButton', class: 'notranslate' }, sortButtonLabel());
-        const selectBtn = el('div', { id: 'Scholarscope_SelectShownFrame', class: 'notranslate' }, '选中页面上的文献');
+        const bar = el('div', { id: 'Scholarscope_Toolbar', class: 'Scholarscope_Toolbar notranslate' });
+        const filterBtn = el('div', { id: 'Scholarscope_FilterButton', class: 'Scholarscope_ToolbarButton Scholarscope_FilterButton notranslate' }, '按条件筛选');
+        const sortBtn = el('div', { id: 'Scholarscope_SortButton', class: 'Scholarscope_ToolbarButton Scholarscope_SortButton notranslate' }, sortButtonLabel());
+        const selectBtn = el('div', { id: 'Scholarscope_SelectShownFrame', class: 'Scholarscope_ToolbarButton Scholarscope_SelectShownFrame notranslate' }, '选中页面上的文献');
         const dropdown = buildFilterDropdown();
 
         bar.appendChild(filterBtn);
@@ -749,22 +932,22 @@
     }
 
     function buildFilterDropdown() {
-        const dd = el('div', { id: 'Scholarscope_DropDown', class: 'notranslate', style: 'display:none' });
+        const dd = el('div', { id: 'Scholarscope_FilterDropDown', class: 'Scholarscope_DropDown notranslate', style: 'display:none' });
 
-        const container = el('div', { id: 'Scholarscope_FilterContainerFrame' });
+        const container = el('div', { class: 'Scholarscope_FilterContainerFrame' });
 
-        const inputs = el('div', { id: 'Scholarscope_FilterValueInputFrame' }, [
-            el('div', { id: 'Scholarscope_FilterValueMinInputFrame' }, [
+        const inputs = el('div', { class: 'Scholarscope_FilterValueInputFrame' }, [
+            el('div', { class: 'Scholarscope_FilterValueMinInputFrame Scholarscope_FilterValueLine' }, [
                 document.createTextNode('最小值：'),
-                el('input', { id: 'Scholarscope_FilterValueMinInput', type: 'number', step: '0.1', min: '0', max: '2000', value: String(CFG.filter.minIF) }),
+                el('input', { id: 'Scholarscope_FilterValueMinInput', class: 'Scholarscope_FilterValueInput', type: 'number', step: '0.1', min: '0', max: '2000', value: String(CFG.filter.minIF) }),
             ]),
-            el('div', { id: 'Scholarscope_FilterValueMaxInputFrame' }, [
+            el('div', { class: 'Scholarscope_FilterValueMaxInputFrame Scholarscope_FilterValueLine' }, [
                 document.createTextNode('最大值：'),
-                el('input', { id: 'Scholarscope_FilterValueMaxInput', type: 'number', step: '0.1', min: '0', max: '2000', value: String(CFG.filter.maxIF) }),
+                el('input', { id: 'Scholarscope_FilterValueMaxInput', class: 'Scholarscope_FilterValueInput', type: 'number', step: '0.1', min: '0', max: '2000', value: String(CFG.filter.maxIF) }),
             ]),
         ]);
 
-        const qs = el('div', { id: 'Scholarscope_FilterQuartileInputFrame' });
+        const qs = el('div', { class: 'Scholarscope_FilterQuartileInputFrame' });
         ['q1', 'q2', 'q3', 'q4'].forEach((k, i) => {
             const line = el('div', { class: 'Scholarscope_FilterValueQuartileFrames' }, [
                 el('input', { id: `Scholarscope_FilterValueQuartile${i + 1}Input`, class: 'Scholarscope_FilterValueQuartileInputs', type: 'checkbox' }),
@@ -778,18 +961,18 @@
         container.appendChild(inputs);
         container.appendChild(qs);
 
-        const remember = el('div', { id: 'Scholarscope_FilterRememberFrame' }, [
+        const remember = el('div', { class: 'Scholarscope_FilterRememberFrame Scholarscope_InlineCheck' }, [
             el('input', { id: 'Scholarscope_FilterCheckbox', type: 'checkbox' }),
             el('div', { id: 'Scholarscope_FilterText' }, '始终开启筛选器'),
         ]);
         remember.querySelector('input').checked = !!CFG.autoFilter;
 
-        const apply = el('div', { id: 'Scholarscope_CreateFilterButton' }, '应用筛选器');
-        const close = el('div', { id: 'Scholarscope_CloseFilterButton' }, '关闭筛选器');
-        const buttonRow = el('div', { id: 'Scholarscope_FilterButtonRow' }, [apply, close]);
+        const apply = el('div', { class: 'Scholarscope_CreateFilterButton Scholarscope_DropDownButton Scholarscope_DropDownButtonPrimary' }, '应用筛选器');
+        const close = el('div', { class: 'Scholarscope_CloseFilterButton Scholarscope_DropDownButton Scholarscope_DropDownButtonDanger' }, '关闭筛选器');
+        const buttonRow = el('div', { class: 'Scholarscope_FilterButtonRow Scholarscope_ButtonRow' }, [apply, close]);
 
         dd.appendChild(container);
-        dd.appendChild(el('div', { id: 'Scholarscope_SeparateLine' }));
+        dd.appendChild(el('div'));
         dd.appendChild(remember);
         dd.appendChild(buttonRow);
 
@@ -951,7 +1134,7 @@
         alert('下次加载页面生效。');
     });
     GM_registerMenuCommand('打开筛选设置面板', () => {
-        const dd = document.getElementById('Scholarscope_DropDown');
+        const dd = document.getElementById('Scholarscope_FilterDropDown');
         if (dd) dd.style.display = 'block';
         else alert('仅在搜索结果页可用。');
     });
@@ -971,20 +1154,16 @@
     // Styles
     // =========================================================================
     GM_addStyle(`
-/* Detail page: #Scholarscope_JournalDetailFrame */
-#Scholarscope_JournalDetailFrame{display:inline-block;width:max-content;line-height:1.6;position:relative;top:10px;overflow:hidden}
-.Scholarscope_Factor,.Scholarscope_Quartile,.Scholarscope_ArticleType{
-  color:#fff;padding:0 .5em;width:max-content;float:left;height:2em;line-height:2em;background:#616161;margin-right:0;user-select:none}
-.Scholarscope_ArticleType{background:#225390}
-.Scholarscope_Factor,.Scholarscope_Quartile{cursor:pointer}
+/* Detail page */
+.Scholarscope_JournalDetailFrame{display:inline-block;width:max-content;line-height:1.6;position:relative;top:10px;overflow:hidden}
+.Scholarscope_Badge{
+  color:#fff;padding:0 .5em;width:max-content;float:left;height:2em;line-height:2em;background:#616161;user-select:none}
+.Scholarscope_BadgeClickable{cursor:pointer}
+.Scholarscope_BadgeBlue{background:#225390}
 
 /* Appendix (search + detail-list) badge group */
 .Scholarscope_Appendix_JournalFrame{width:100%;min-height:2em;overflow:hidden;margin-top:.3em;margin-bottom:.3em}
-.Scholarscope_Appendix_Journal,.Scholarscope_Appendix_Factor,.Scholarscope_Appendix_Quartile,.Scholarscope_Appendix_Year,.Scholarscope_Appendix_ArticleType{
-  color:#fff;padding:0 .5em;width:max-content;float:left;height:2em;line-height:2em;background:#616161;user-select:none}
 .Scholarscope_Appendix_Journal{border-right:1px solid}
-.Scholarscope_Appendix_Year,.Scholarscope_Appendix_ArticleType{background:#225390}
-.Scholarscope_Appendix_Factor,.Scholarscope_Appendix_Quartile{cursor:pointer}
 
 /* IF ambiguity outline */
 .Scholarscope_IF_Ambiguous{
@@ -1010,41 +1189,47 @@
 .full-view-snippet{overflow:hidden;transition:opacity .3s;margin-top:.5rem}
 
 /* Toolbar */
-#Scholarscope_Toolbar{position:relative;margin:.5rem 0;display:flex;gap:0;align-items:center;flex-wrap:wrap}
-#Scholarscope_FilterButton,#Scholarscope_SortButton,#Scholarscope_SelectShownFrame{
+.Scholarscope_Toolbar{position:relative;margin:.5rem 0;display:flex;gap:0;align-items:center;flex-wrap:wrap}
+.Scholarscope_ToolbarButton{
   padding:8px 15px 8px 12px;border:1px solid #aeb0b5;font-size:14px;color:#212121;cursor:pointer;
   background:#fff;margin-right:8px;transition:color .3s,border-color .3s,background-color .3s;user-select:none}
-#Scholarscope_FilterButton:hover,#Scholarscope_SortButton:hover,#Scholarscope_SelectShownFrame:hover{border-color:#046B99}
-#Scholarscope_FilterButton:active,#Scholarscope_SortButton:active,#Scholarscope_SelectShownFrame:active{background:#205493;color:#fff}
-#Scholarscope_SelectShownFrame{visibility:hidden}
+.Scholarscope_ToolbarButton:hover{border-color:#046B99}
+.Scholarscope_ToolbarButton:active{background:#205493;color:#fff}
+.Scholarscope_SelectShownFrame{visibility:hidden}
 
 /* Dropdown */
-#Scholarscope_DropDown{
+.Scholarscope_DropDown{
   width:340px;background:#fff;border:1px solid #aeb0b5;box-shadow:0 3px 14px -4px #8E8E8E;
-  position:absolute;top:44px;left:0;z-index:1000;padding:12px;box-sizing:border-box;font-size:14px}
-#Scholarscope_FilterContainerFrame{display:flex;border-bottom:1px dashed #DDD;padding-bottom:10px;margin-bottom:10px}
-#Scholarscope_FilterValueInputFrame{width:62%}
-#Scholarscope_FilterValueMinInputFrame,#Scholarscope_FilterValueMaxInputFrame{margin:6px 0;display:flex;align-items:center;gap:6px}
-#Scholarscope_FilterValueMinInput,#Scholarscope_FilterValueMaxInput{width:90px;padding:4px;border:1px solid #bbb}
-#Scholarscope_FilterQuartileInputFrame{width:38%;border-left:1px dashed #DDD;padding-left:10px}
+  position:absolute;top:44px;left:0;z-index:1000;padding:12px;box-sizing:border-box;font-size:14px;margin:0}
+.Scholarscope_FilterContainerFrame{display:flex;border-bottom:1px dashed #DDD;padding-bottom:10px;margin-bottom:10px}
+.Scholarscope_FilterValueInputFrame{width:62%}
+.Scholarscope_FilterValueLine{margin:6px 0;display:flex;align-items:center;gap:6px}
+.Scholarscope_FilterValueInput{width:90px;padding:4px;border:1px solid #bbb}
+.Scholarscope_FilterQuartileInputFrame{width:38%;border-left:1px dashed #DDD;padding-left:10px}
 .Scholarscope_FilterValueQuartileFrames{display:flex;align-items:center;gap:6px;margin:4px 0}
 .Scholarscope_FilterValueQuartileTexts{font-weight:bold}
-#Scholarscope_FilterRememberFrame{display:flex;align-items:center;gap:6px;margin-bottom:10px}
-#Scholarscope_FilterButtonRow{display:flex;gap:10px;margin-top:8px}
-#Scholarscope_CreateFilterButton,#Scholarscope_CloseFilterButton{
-  flex:0 0 110px;min-width:110px;text-align:center;padding:8px 0;line-height:1;color:#fff;cursor:pointer;user-select:none}
-#Scholarscope_CreateFilterButton{background:#0071BC}
-#Scholarscope_CreateFilterButton:hover{background:#20558A}
-#Scholarscope_CloseFilterButton{background:#E66666}
-#Scholarscope_CloseFilterButton:hover{background:#D50000}
-#Scholarscope_DropDown input[type="checkbox"]{
+.Scholarscope_InlineCheck{display:flex;align-items:center;gap:6px;margin:10px 0}
+.Scholarscope_ButtonRow{display:flex;gap:10px;margin-top:8px}
+.Scholarscope_DropDownButton{
+  flex:0 0 110px;min-width:110px;text-align:center;padding:8px 0;line-height:1;color:#fff;cursor:pointer;user-select:none;
+  display:inline-block !important;visibility:visible !important;opacity:1 !important;pointer-events:auto !important;
+  border:0;font:inherit}
+.Scholarscope_DropDownButtonPrimary{background:#0071BC}
+.Scholarscope_DropDownButtonPrimary:hover{background:#20558A}
+.Scholarscope_DropDownButtonDanger{background:#E66666}
+.Scholarscope_DropDownButtonDanger:hover{background:#D50000}
+.Scholarscope_DropDown input[type="checkbox"]{
   appearance:auto !important;-webkit-appearance:auto !important;
   opacity:1 !important;visibility:visible !important;
   position:static !important;display:inline-block !important;
   width:14px !important;height:14px !important;margin:0 !important;
   pointer-events:auto !important}
-#Scholarscope_CreateFilterButton,#Scholarscope_CloseFilterButton{
-  display:inline-block !important;visibility:visible !important;opacity:1 !important;pointer-events:auto !important}
+.Scholarscope_DropDownTitle{font-weight:bold;margin-bottom:10px}
+.Scholarscope_DropDownField{display:block;flex:auto;margin:8px 0}
+.Scholarscope_DropDownLabel{font-weight:bold;margin-bottom:4px}
+.Scholarscope_DropDownControl{width:100%;padding:4px;border:1px solid #bbb;box-sizing:border-box}
+.Scholarscope_DropDownHint{margin-top:4px;color:#5B616B;line-height:1.4}
+.Scholarscope_TermWrapper{display:flex;gap:6px;}
 
 /* Modal */
 #Scholarscope_Modal{position:fixed;inset:0;z-index:9999}
@@ -1062,10 +1247,9 @@
 .Scholarscope_Modal_ButtonRow .Scholarscope_Modal_ClearCache{margin-top:0}
 .Scholarscope_Modal_ClearCache{display:inline-block;padding:8px 16px;background:#E66666;color:#fff;cursor:pointer;user-select:none}
 .Scholarscope_Modal_ClearCache:hover{background:#D50000}
-.Scholarscope_Modal_Pre{background:#f6f8fa;padding:10px;border:1px solid #e1e4e8;white-space:pre-wrap;font-family:ui-monospace,Menlo,Consolas,monospace}
 
 /* Float clearfix */
-.Scholarscope_Appendix_JournalFrame::after,#Scholarscope_JournalDetailFrame::after{content:"";display:block;clear:both}
+.Scholarscope_Appendix_JournalFrame::after,.Scholarscope_JournalDetailFrame::after{content:"";display:block;clear:both}
 `);
 
     // =========================================================================
