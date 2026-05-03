@@ -55,6 +55,7 @@
                 else if (k === 'style') n.setAttribute('style', attrs[k]);
                 else if (k === 'dataset') Object.assign(n.dataset, attrs[k]);
                 else if (k.startsWith('on') && typeof attrs[k] === 'function') n.addEventListener(k.slice(2), attrs[k]);
+                else if (k === 'checked' || k === 'disabled') attrs[k] && (n[k] = true);
                 else n.setAttribute(k, attrs[k]);
             }
         }
@@ -389,8 +390,6 @@
             { value: '5', label: '5' },
         ]);
         pageNo.name = 'page';
-        const notMed = el('input', { name: 'is_med', type: 'checkbox', value: '0' });
-        const showAll = el('input', { name: 'show_all', type: 'checkbox', value: '1' });
         const submit = el('button', { type: 'submit', class: 'Scholarscope_DropDownButton Scholarscope_DropDownButtonPrimary' }, '查询');
         const reset = el('button', { type: 'reset', class: 'Scholarscope_DropDownButton Scholarscope_DropDownButtonDanger' }, '重置');
 
@@ -406,14 +405,14 @@
                 buildManualLookupField('缩写', isAbbr),
                 buildManualLookupField('页数', pageNo),
             ]),
-            el('div', { class: 'Scholarscope_TermWrapper' }, [
-                el('label', { class: 'Scholarscope_DropDownInlineCheck Scholarscope_InlineCheck' }, [
-                    notMed,
-                    el('span', {}, '优先 JCR 数据库'),
+            el('div', { class: 'Scholarscope_TermWrapper Scholarscope_InlineCheck' }, [
+                el('div', {}, [
+                    el('input', { name: 'is_med', type: 'checkbox', value: '0' }),
+                    el('label', { for: 'is_med' }, '优先 JCR 数据库'),
                 ]),
-                el('label', { class: 'Scholarscope_DropDownInlineCheck Scholarscope_InlineCheck' }, [
-                    showAll,
-                    el('span', {}, '全部字段'),
+                el('div', {}, [
+                    el('input', { name: 'show_all', type: 'checkbox', value: '1' }),
+                    el('label', { for: 'show_all' }, '全部字段'),
                 ]),
             ]),
             el('div', { class: 'Scholarscope_DropDownHint' }, [
@@ -803,7 +802,7 @@
             href: citedHref,
             target: '_blank',
             rel: 'noopener',
-        }, CFG.showCitation ? 'Cited: …' : 'Cited: —');
+        }, CFG.showCitation ? '🔥Cited: …' : '🔥Cited: —');
         row.appendChild(citedLink);
 
         const gsHref = 'https://scholar.google.com/scholar?q=' + encodeURIComponent(articleTitle || pmid);
@@ -812,13 +811,13 @@
             href: gsHref,
             target: '_blank',
             rel: 'noopener',
-        }, 'Google Scholar');
+        }, '🎓Google Scholar');
         row.appendChild(gsLink);
 
         const absBtn = el('div', {
             class: 'spaced-citation-item citation-part Scholarscope_Action_Abstract',
             title: '点击展开/收起摘要',
-        }, 'Full Abstract');
+        }, '📚Full Abstract');
         absBtn.addEventListener('click', (ev) => {
             ev.preventDefault();
             ev.stopPropagation();
@@ -844,8 +843,8 @@
             const cc = e.docsum.querySelector('.Scholarscope_Action_Cited');
             if (!cc) return;
             const info = map[e.pmid];
-            if (info && typeof info.citation_count === 'number') cc.textContent = `Cited: ${info.citation_count}`;
-            else cc.textContent = 'Cited: —';
+            if (info && typeof info.citation_count === 'number') cc.textContent = `🔥Cited: ${info.citation_count}`;
+            else cc.textContent = '🔥Cited: —';
         });
     }
 
@@ -900,9 +899,9 @@
         if (!anchor) return;
 
         const bar = el('div', { id: 'Scholarscope_Toolbar', class: 'Scholarscope_Toolbar notranslate' });
-        const filterBtn = el('div', { id: 'Scholarscope_FilterButton', class: 'Scholarscope_ToolbarButton Scholarscope_FilterButton notranslate' }, '按条件筛选');
+        const filterBtn = el('div', { id: 'Scholarscope_FilterButton', class: 'Scholarscope_ToolbarButton Scholarscope_FilterButton notranslate' }, '页内筛选');
         const sortBtn = el('div', { id: 'Scholarscope_SortButton', class: 'Scholarscope_ToolbarButton Scholarscope_SortButton notranslate' }, sortButtonLabel());
-        const selectBtn = el('div', { id: 'Scholarscope_SelectShownFrame', class: 'Scholarscope_ToolbarButton Scholarscope_SelectShownFrame notranslate' }, '选中页面上的文献');
+        const selectBtn = el('div', { id: 'Scholarscope_SelectShownFrame', class: 'Scholarscope_ToolbarButton Scholarscope_SelectShownFrame notranslate' }, '全选本页文献');
         const dropdown = buildFilterDropdown();
 
         bar.appendChild(filterBtn);
@@ -923,8 +922,6 @@
         });
         selectBtn.addEventListener('click', selectShownDocsums);
 
-        if (CFG.autoFilter) applyFilter(true);
-        if (CFG.autoSort) applySorting();
     }
 
     function sortButtonLabel() {
@@ -937,11 +934,11 @@
         const container = el('div', { class: 'Scholarscope_FilterContainerFrame' });
 
         const inputs = el('div', { class: 'Scholarscope_FilterValueInputFrame' }, [
-            el('div', { class: 'Scholarscope_FilterValueMinInputFrame Scholarscope_FilterValueLine' }, [
+            el('div', { class: 'Scholarscope_TermWrapper' }, [
                 document.createTextNode('最小值：'),
                 el('input', { id: 'Scholarscope_FilterValueMinInput', class: 'Scholarscope_FilterValueInput', type: 'number', step: '0.1', min: '0', max: '2000', value: String(CFG.filter.minIF) }),
             ]),
-            el('div', { class: 'Scholarscope_FilterValueMaxInputFrame Scholarscope_FilterValueLine' }, [
+            el('div', { class: 'Scholarscope_TermWrapper' }, [
                 document.createTextNode('最大值：'),
                 el('input', { id: 'Scholarscope_FilterValueMaxInput', class: 'Scholarscope_FilterValueInput', type: 'number', step: '0.1', min: '0', max: '2000', value: String(CFG.filter.maxIF) }),
             ]),
@@ -949,31 +946,45 @@
 
         const qs = el('div', { class: 'Scholarscope_FilterQuartileInputFrame' });
         ['q1', 'q2', 'q3', 'q4'].forEach((k, i) => {
-            const line = el('div', { class: 'Scholarscope_FilterValueQuartileFrames' }, [
-                el('input', { id: `Scholarscope_FilterValueQuartile${i + 1}Input`, class: 'Scholarscope_FilterValueQuartileInputs', type: 'checkbox' }),
-                el('div', { class: 'Scholarscope_FilterValueQuartileTexts' }, CFG.quartileSource === 'cas' ? `${i + 1}区` : `Q${i + 1}`),
-            ]);
-            const cb = line.querySelector('input');
-            cb.checked = !!CFG.filter[k];
+            const line = el(
+              "div",
+              {},
+              [
+                el("input", {
+                  id: `Scholarscope_FilterValueQuartile${i + 1}Input`,
+                  type: "checkbox",
+                  checked: !!CFG.filter[k] ? true : false
+                }),
+                el(
+                  "label",
+                  {
+                    class: "Scholarscope_FilterValueQuartileTexts",
+                    for: `Scholarscope_FilterValueQuartile${i + 1}Input`,
+                  },
+                  CFG.quartileSource === "cas" ? `${i + 1}区` : `Q${i + 1}`,
+                ),
+              ],
+            );
             qs.appendChild(line);
         });
 
         container.appendChild(inputs);
         container.appendChild(qs);
 
-        const remember = el('div', { class: 'Scholarscope_FilterRememberFrame Scholarscope_InlineCheck' }, [
-            el('input', { id: 'Scholarscope_FilterCheckbox', type: 'checkbox' }),
-            el('div', { id: 'Scholarscope_FilterText' }, '始终开启筛选器'),
-        ]);
-        remember.querySelector('input').checked = !!CFG.autoFilter;
+        const autoCheckbox = el('div', { class: 'Scholarscope_InlineCheck' }, [el('div', {}, [
+            el('input', { id: 'Scholarscope_FilterCheckbox', type: 'checkbox', checked: !!CFG.autoFilter ? true : false }),
+            el('label', { for: 'Scholarscope_FilterCheckbox' }, '自动筛选'),
+        ]), el('div', {}, [
+            el('input', { id: 'Scholarscope_SortCheckbox', type: 'checkbox', checked: !!CFG.autoSort ? true : false }),
+            el('label', { for: 'Scholarscope_SortCheckbox' }, '自动排序'),
+        ])]);
 
         const apply = el('div', { class: 'Scholarscope_CreateFilterButton Scholarscope_DropDownButton Scholarscope_DropDownButtonPrimary' }, '应用筛选器');
         const close = el('div', { class: 'Scholarscope_CloseFilterButton Scholarscope_DropDownButton Scholarscope_DropDownButtonDanger' }, '关闭筛选器');
         const buttonRow = el('div', { class: 'Scholarscope_FilterButtonRow Scholarscope_ButtonRow' }, [apply, close]);
 
         dd.appendChild(container);
-        dd.appendChild(el('div'));
-        dd.appendChild(remember);
+        dd.appendChild(autoCheckbox);
         dd.appendChild(buttonRow);
 
         apply.addEventListener('click', () => {
@@ -984,6 +995,7 @@
             CFG.filter.q3 = dd.querySelector('#Scholarscope_FilterValueQuartile3Input').checked ? 1 : 0;
             CFG.filter.q4 = dd.querySelector('#Scholarscope_FilterValueQuartile4Input').checked ? 1 : 0;
             CFG.autoFilter = dd.querySelector('#Scholarscope_FilterCheckbox').checked;
+            CFG.autoSort = dd.querySelector('#Scholarscope_SortCheckbox').checked;
             saveCfg();
             applyFilter(true);
             dd.style.display = 'none';
@@ -1024,18 +1036,13 @@
     }
 
     function applySorting() {
-        const groups = new Map();
-        document.querySelectorAll('.full-docsum').forEach(ds => {
-            const holder = ds.closest('li, article.full-docsum') || ds;
-            const parent = holder.parentElement;
-            if (!parent) return;
-            if (!groups.has(parent)) groups.set(parent, []);
-            groups.get(parent).push(holder);
-        });
-        groups.forEach((items, parent) => {
-            items.sort((a, b) => readSortValue(b) - readSortValue(a));
-            items.forEach(it => parent.appendChild(it));
-        });
+        const docsums = Array.from(document.querySelectorAll('.full-docsum'));
+        if (docsums.length < 2) return;
+        const holders = docsums.map(ds => ds.closest('li, article.full-docsum') || ds);
+        const target = holders[0].parentElement;
+        if (!target) return;
+        holders.sort((a, b) => readSortValue(b) - readSortValue(a));
+        holders.forEach(h => target.appendChild(h));
     }
     function readSortValue(holder) {
         const ds = holder.classList && holder.classList.contains('full-docsum') ? holder : holder.querySelector('.full-docsum') || holder;
@@ -1074,8 +1081,10 @@
             if (e) entries.push(e);
         });
         if (!entries.length) return;
-        entries.forEach(e => fillAppendixJcr(e));
-        await fillAppendixCitationBatch(entries);
+        await Promise.all([
+            Promise.all(entries.map(e => fillAppendixJcr(e))),
+            fillAppendixCitationBatch(entries),
+        ]);
         if (CFG.autoFilter) applyFilter(true);
         if (CFG.autoSort) applySorting();
     }
@@ -1128,19 +1137,10 @@
         saveCfg();
         alert('下次加载页面生效。');
     });
-    GM_registerMenuCommand('切换引用数显示 (当前：' + (CFG.showCitation ? '开' : '关') + ')', () => {
-        CFG.showCitation = !CFG.showCitation;
-        saveCfg();
-        alert('下次加载页面生效。');
-    });
-    GM_registerMenuCommand('打开筛选设置面板', () => {
-        const dd = document.getElementById('Scholarscope_FilterDropDown');
-        if (dd) dd.style.display = 'block';
-        else alert('仅在搜索结果页可用。');
-    });
-    GM_registerMenuCommand('清空 JCR/iCite 缓存', () => {
+    GM_registerMenuCommand('清空 JCR 缓存', () => {
+        if (!window.confirm('确定清空 JCR 缓存吗？此操作不可撤销。')) return;
         GM_setValue('jcrCache', {});
-        alert('已清空 JCR 缓存。iCite 本身未缓存。');
+        alert('已清空 JCR 缓存。');
     });
     GM_registerMenuCommand('设置 PubMed API Key', () => {
         const v = window.prompt('输入 NCBI eutils API Key（留空则清除）：', CFG.pubmedApiKey || '');
@@ -1186,29 +1186,34 @@
 .Scholarscope_ActionRow{margin-top:.4em}
 .Scholarscope_Action_Abstract{cursor:pointer}
 .Scholarscope_Action_Abstract:hover{color:#04669B}
-.full-view-snippet{overflow:hidden;transition:opacity .3s;margin-top:.5rem}
+.full-view-snippet{overflow:auto;transition:opacity .3s;margin-top:.5rem}
+#adjacent-navigation .full-view-snippet{max-height:200px;}
 
 /* Toolbar */
 .Scholarscope_Toolbar{position:relative;margin:.5rem 0;display:flex;gap:0;align-items:center;flex-wrap:wrap}
 .Scholarscope_ToolbarButton{
-  padding:8px 15px 8px 12px;border:1px solid #aeb0b5;font-size:14px;color:#212121;cursor:pointer;
+  display:inline-flex;align-items:center;
+  padding:5px 15px 5px 12px;border:1px solid #aeb0b5;font-size:14px;color:#212121;cursor:pointer;
   background:#fff;margin-right:8px;transition:color .3s,border-color .3s,background-color .3s;user-select:none}
 .Scholarscope_ToolbarButton:hover{border-color:#046B99}
 .Scholarscope_ToolbarButton:active{background:#205493;color:#fff}
+.Scholarscope_ToolbarButton:before{content:"";width:14px;height:14px;margin-right:3px;fill:#5B616B}
+.Scholarscope_FilterButton:before{background:url("data:image/svg+xml,%3Csvg viewBox='0 0 32 32' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M29.815 6.168A1.991 1.991 0 0 0 27.986 5H4.014c-.797 0-1.498.448-1.83 1.168a1.972 1.972 0 0 0 .297 2.128l.001.001L12 19.371V28a1 1 0 0 0 1.555.832l6-4c.278-.186.445-.498.445-.832v-4.629l9.519-11.074a1.972 1.972 0 0 0 .296-2.129z'/%3E%3C/svg%3E")}
+.Scholarscope_SortButton:before{background:url("data:image/svg+xml,%3Csvg height='14' viewBox='0 0 28 28' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M24.244 18.373l-2.951 2.95.02-10.323a1 1 0 1 0-2 0l-.02 10.253-2.879-2.88A1 1 0 0 0 15 19.788l4.115 4.115a1.498 1.498 0 0 0 2.188.224c.039-.03.076-.062.111-.097l4.244-4.242a1 1 0 0 0-1.414-1.415zM2 20.7a.8.8 0 0 0 .8.8h7.9a.797.797 0 0 0 .8-.8v-.4a.8.8 0 0 0-.8-.8H2.8a.8.8 0 0 0-.8.8v.4zM2.506 13.443A.798.798 0 0 1 2 12.7v-.4a.8.8 0 0 1 .8-.8h12.4a.8.8 0 0 1 .8.8v.4a.8.8 0 0 1-.8.8H2.8a.805.805 0 0 1-.294-.057zM2.074 5.035A.797.797 0 0 1 2 4.7v-.4a.8.8 0 0 1 .8-.8h21.4a.8.8 0 0 1 .8.8v.4a.8.8 0 0 1-.8.8H2.8a.8.8 0 0 1-.726-.465z'/%3E%3C/svg%3E")}
 .Scholarscope_SelectShownFrame{visibility:hidden}
+.Scholarscope_SelectShownFrame:before{background:url("data:image/svg+xml,%3Csvg viewBox='0 0 1024 1024' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M374.656 713.344a32 32 0 0 1 3.648 40.832l-3.648 4.48-128 128a32 32 0 0 1-40.832 3.648l-4.48-3.648-64-64a32 32 0 0 1 40.832-48.96l4.48 3.648L224 818.752l105.344-105.408a32 32 0 0 1 45.312 0zM864 768a32 32 0 1 1 0 64H480a32 32 0 1 1 0-64h384zM374.656 457.344a32 32 0 0 1 3.648 40.832l-3.648 4.48-128 128a32 32 0 0 1-40.832 3.648l-4.48-3.648-64-64a32 32 0 0 1 40.832-48.96l4.48 3.648L224 562.752l105.344-105.408a32 32 0 0 1 45.312 0zM864 512a32 32 0 1 1 0 64H480a32 32 0 0 1 0-64h384zM374.656 201.344a32 32 0 0 1 3.648 40.832l-3.648 4.48-128 128a32 32 0 0 1-40.832 3.648l-4.48-3.648-64-64a32 32 0 0 1 40.832-48.96l4.48 3.648L224 306.752l105.344-105.408a32 32 0 0 1 45.312 0zM864 256a32 32 0 1 1 0 64H480a32 32 0 0 1 0-64h384z'/%3E%3C/svg%3E")}
 
 /* Dropdown */
 .Scholarscope_DropDown{
   width:340px;background:#fff;border:1px solid #aeb0b5;box-shadow:0 3px 14px -4px #8E8E8E;
   position:absolute;top:44px;left:0;z-index:1000;padding:12px;box-sizing:border-box;font-size:14px;margin:0}
+.Scholarscope_DropDown label{margin-top:0}
 .Scholarscope_FilterContainerFrame{display:flex;border-bottom:1px dashed #DDD;padding-bottom:10px;margin-bottom:10px}
 .Scholarscope_FilterValueInputFrame{width:62%}
-.Scholarscope_FilterValueLine{margin:6px 0;display:flex;align-items:center;gap:6px}
 .Scholarscope_FilterValueInput{width:90px;padding:4px;border:1px solid #bbb}
-.Scholarscope_FilterQuartileInputFrame{width:38%;border-left:1px dashed #DDD;padding-left:10px}
-.Scholarscope_FilterValueQuartileFrames{display:flex;align-items:center;gap:6px;margin:4px 0}
+.Scholarscope_FilterQuartileInputFrame{width:38%;border-left:1px dashed #DDD;padding-left:10px;margin-top:1em}
 .Scholarscope_FilterValueQuartileTexts{font-weight:bold}
-.Scholarscope_InlineCheck{display:flex;align-items:center;gap:6px;margin:10px 0}
+.Scholarscope_InlineCheck{display:flex;align-items:center;gap:12px!important;margin:10px 0}
 .Scholarscope_ButtonRow{display:flex;gap:10px;margin-top:8px}
 .Scholarscope_DropDownButton{
   flex:0 0 110px;min-width:110px;text-align:center;padding:8px 0;line-height:1;color:#fff;cursor:pointer;user-select:none;
@@ -1218,18 +1223,13 @@
 .Scholarscope_DropDownButtonPrimary:hover{background:#20558A}
 .Scholarscope_DropDownButtonDanger{background:#E66666}
 .Scholarscope_DropDownButtonDanger:hover{background:#D50000}
-.Scholarscope_DropDown input[type="checkbox"]{
-  appearance:auto !important;-webkit-appearance:auto !important;
-  opacity:1 !important;visibility:visible !important;
-  position:static !important;display:inline-block !important;
-  width:14px !important;height:14px !important;margin:0 !important;
-  pointer-events:auto !important}
+.Scholarscope_DropDown input[type="checkbox"]{display:none}
 .Scholarscope_DropDownTitle{font-weight:bold;margin-bottom:10px}
 .Scholarscope_DropDownField{display:block;flex:auto;margin:8px 0}
 .Scholarscope_DropDownLabel{font-weight:bold;margin-bottom:4px}
 .Scholarscope_DropDownControl{width:100%;padding:4px;border:1px solid #bbb;box-sizing:border-box}
 .Scholarscope_DropDownHint{margin-top:4px;color:#5B616B;line-height:1.4}
-.Scholarscope_TermWrapper{display:flex;gap:6px;}
+.Scholarscope_TermWrapper{display:flex;gap:6px;margin-top:1em;align-items:center}
 
 /* Modal */
 #Scholarscope_Modal{position:fixed;inset:0;z-index:9999}
