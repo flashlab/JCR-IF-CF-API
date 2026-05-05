@@ -9,7 +9,11 @@
     "seed:local": "npx tsx scripts/seed.ts && wrangler d1 execute jcr-db --local --file=seed.sql",
     "seed:remote": "npx tsx scripts/seed.ts && wrangler d1 execute jcr-db --remote --file=seed.sql",
     "schema:local": "wrangler d1 execute jcr-db --local --file=schema.sql",
-    "schema:remote": "wrangler d1 execute jcr-db --remote --file=schema.sql"
+    "schema:remote": "wrangler d1 execute jcr-db --remote --file=schema.sql",
+    "userscript:check": "node --check scripts/extension/scholarscope-lite/scholarscope-lite.user.js",
+    "userscript:build": "node scripts/build-userscript.mjs",
+    "medreading:check": "node --check scripts/extension/medreading-jcr/medreading-jcr.user.js",
+    "medreading:build": "node scripts/build-userscript.mjs medreading-jcr"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20241205.0",
