@@ -1,9 +1,11 @@
 // ==UserScript==
 // @name         Scholarscope Lite
-// @namespace    local.scholarscope.lite
+// @namespace    https://github.com/flashlab/JCR-IF-CF-API
 // @version      0.2.0
 // @description  PubMed / Google Scholar 期刊 IF/分区徽章、筛选排序、Abstract 预览、iCite 引用数；参考 Scholarscope 扩展 UI。
-// @author       local
+// @author       flashlab<zhengjuefei25@163.com>
+// @homepageURL  https://github.com/flashlab/JCR-IF-CF-API
+// @license      GPL-3.0
 // @match        https://pubmed.ncbi.nlm.nih.gov/*
 // @match        https://scholar.google.com/scholar*
 // @run-at       document-idle
@@ -272,7 +274,34 @@
     u.searchParams.set("rettype", "xml");
     u.searchParams.set("id", pmid);
     if (CFG.pubmedApiKey) u.searchParams.set("api_key", CFG.pubmedApiKey);
-    return efetchQueue(() => gmFetchText(u.toString()));
+    const xmlText = await efetchQueue(() => gmFetchText(u.toString()));
+    const doc = new DOMParser().parseFromString(xmlText, "text/xml");
+    const tags = doc.getElementsByTagName("AbstractText");
+    let abstractHtml = "";
+    for (let i = 0; i < tags.length; i++) {
+      const label = tags[i].getAttribute("Label");
+      const inner = tags[i].innerHTML;
+      abstractHtml += label
+        ? `<p><b>${label}: </b>${inner}</p>`
+        : `<p>${inner}</p>`;
+    }
+    if (!abstractHtml) abstractHtml = "<b>No abstract.</b>";
+    const titleNode = doc.getElementsByTagName("ArticleTitle")[0];
+    const journalNode = doc.getElementsByTagName("Journal")[0];
+    const journalTitleNode =
+      journalNode && journalNode.getElementsByTagName("Title")[0];
+    const idsNodes = doc.getElementsByTagName("ELocationID");
+    const doiNode =
+      idsNodes &&
+      Array.from(idsNodes || []).find(
+        (node) => node.getAttribute("EIdType") === "doi",
+      );
+    return {
+      abstractHtml,
+      articleTitleHtml: titleNode ? titleNode.innerHTML : "",
+      journalTitleHtml: journalTitleNode ? journalTitleNode.innerHTML : "",
+      doiHtml: doiNode ? doiNode.innerHTML : "",
+    };
   }
 
   // =========================================================================
@@ -430,7 +459,7 @@
   function buildManualLookupSelect(id, options) {
     const select = el("select", {
       id,
-      class: "Scholarscope_DropDownSelect Scholarscope_DropDownControl",
+      class: "Scholarscope_DropDownControl",
     });
     options.forEach((option) => {
       select.appendChild(el("option", { value: option.value }, option.label));
@@ -459,7 +488,7 @@
     const keywordInput = el("input", {
       id: "Scholarscope_ManualLookupKeyword",
       name: "q",
-      class: "Scholarscope_DropDownTextInput Scholarscope_DropDownControl",
+      class: "Scholarscope_DropDownControl",
       type: "text",
       required: "required",
       minlength: "3",
@@ -558,11 +587,7 @@
             "flashlab/JCR-IF-CF-API",
           ),
         ]),
-        el(
-          "div",
-          { class: "Scholarscope_DropDownButtonRow Scholarscope_ButtonRow" },
-          [submit, reset],
-        ),
+        el("div", { class: "Scholarscope_ButtonRow" }, [submit, reset]),
       ],
     );
 
@@ -676,90 +701,63 @@
   // =========================================================================
   // Badge factories
   // =========================================================================
+  const STATE_CLASSES = [
+    "Scholarscope_NotFound",
+    "Scholarscope_MedHit",
+    "Scholarscope_IF_Ambiguous",
+  ];
+  function setBadge(el, text, color) {
+    if (!el) return;
+    el.textContent = text;
+    el.style.backgroundColor = color;
+  }
   function applyJcrToBadges(factorEl, quartileEl, result, journalKw) {
     result = result || {};
     const rows = result.data || [];
     const primary = rows[0];
+    factorEl.classList.remove(...STATE_CLASSES);
     if (result.errored) {
-      factorEl.textContent = "N/A";
-      factorEl.style.backgroundColor = "#616161";
-      factorEl.classList.remove(
-        "Scholarscope_NotFound",
-        "Scholarscope_NotFound_F0",
-        "Scholarscope_MedHit",
-        "Scholarscope_IF_Ambiguous",
-      );
+      setBadge(factorEl, "N/A", "#616161");
       factorEl.dataset.jcrAll = "[]";
-      if (quartileEl) {
-        quartileEl.textContent = "N/A";
-        quartileEl.style.backgroundColor = "#616161";
-      }
+      setBadge(quartileEl, "N/A", "#616161");
       return;
     }
     if (result.medHit && (!rows || rows.length === 0)) {
-      factorEl.textContent = "No IF";
-      factorEl.style.backgroundColor = "#0094DF";
-      factorEl.classList.remove(
-        "Scholarscope_NotFound",
-        "Scholarscope_NotFound_F0",
-        "Scholarscope_IF_Ambiguous",
-      );
+      setBadge(factorEl, "No IF", "#0094DF");
       factorEl.classList.add("Scholarscope_MedHit");
       factorEl.dataset.origKw = journalKw || "";
       factorEl.dataset.jcrAll = "[]";
       factorEl.title =
         "已被 NLM/MedLine 收录，但 JCR/中科院分区表无此刊；点击可手动重试关键词";
-      if (quartileEl) {
-        quartileEl.textContent = "—";
-        quartileEl.style.backgroundColor = "#616161";
-      }
+      setBadge(quartileEl, "—", "#616161");
       return;
     }
     if (!rows || rows.length === 0) {
-      factorEl.textContent = "Not Found";
-      factorEl.style.backgroundColor = "#616161";
-      factorEl.classList.remove(
-        "Scholarscope_MedHit",
-        "Scholarscope_IF_Ambiguous",
-      );
-      factorEl.classList.add(
-        "Scholarscope_NotFound",
-        "Scholarscope_NotFound_F0",
-      );
+      setBadge(factorEl, "Not Found", "#616161");
+      factorEl.classList.add("Scholarscope_NotFound");
       factorEl.dataset.origKw = journalKw || "";
       factorEl.dataset.jcrAll = "[]";
-      if (quartileEl) {
-        quartileEl.textContent = "N/A";
-        quartileEl.style.backgroundColor = "#616161";
-      }
+      setBadge(quartileEl, "N/A", "#616161");
       return;
     }
-    factorEl.classList.remove(
-      "Scholarscope_NotFound",
-      "Scholarscope_NotFound_F0",
-      "Scholarscope_MedHit",
-    );
-    factorEl.title = "点击查看 JCR 详情";
     const ifVal = primary.jif_2024;
-    factorEl.textContent =
-      ifVal == null || ifVal === "" ? "N/A" : String(ifVal);
-    factorEl.style.backgroundColor = factorColor(ifVal);
+    setBadge(
+      factorEl,
+      ifVal == null || ifVal === "" ? "N/A" : String(ifVal),
+      factorColor(ifVal),
+    );
     factorEl.dataset.jcrAll = JSON.stringify(rows);
     if (journalKw && !factorEl.dataset.origKw)
       factorEl.dataset.origKw = journalKw;
-    if (rows.length >= 2) factorEl.classList.add("Scholarscope_IF_Ambiguous");
-    else factorEl.classList.remove("Scholarscope_IF_Ambiguous");
-
-    if (quartileEl) {
-      const q = pickDisplayQuartile(primary);
-      if (!q) {
-        quartileEl.textContent = "N/A";
-        quartileEl.style.backgroundColor = "#616161";
-      } else {
-        quartileEl.textContent = q;
-        quartileEl.style.backgroundColor = quartileColor(q);
-      }
+    if (rows.length >= 2) {
+      factorEl.classList.add("Scholarscope_IF_Ambiguous");
+      factorEl.title = "多个候选，点击查看";
+    } else {
+      factorEl.title = "点击查看 JCR 详情";
     }
+
+    const q = pickDisplayQuartile(primary);
+    setBadge(quartileEl, q || "N/A", q ? quartileColor(q) : "#616161");
   }
 
   function attachFactorClickHandler(factorEl) {
@@ -770,7 +768,7 @@
         factorEl.classList.contains("Scholarscope_NotFound") ||
         factorEl.classList.contains("Scholarscope_MedHit")
       ) {
-        handleManualLookupClick(factorEl);
+        openManualLookupDropdown(factorEl);
         return;
       }
       let rows = [];
@@ -783,28 +781,20 @@
     });
   }
 
-  function handleManualLookupClick(factorEl) {
-    openManualLookupDropdown(factorEl);
-  }
-
-  function makeFactorBadge(cls) {
-    const e = el("div", {
-      class: `${cls} Scholarscope_Badge Scholarscope_BadgeClickable notranslate`,
-      title: "点击查看 JCR 详情",
-    });
+  function makeBadge(cls, clickable) {
+    const attrs = clickable
+      ? {
+          class: `${cls} Scholarscope_Badge Scholarscope_BadgeClickable notranslate`,
+          title: "点击查看 JCR 详情",
+        }
+      : { class: `${cls} Scholarscope_Badge notranslate` };
+    const e = el("div", attrs);
     e.textContent = "…";
-    e.style.backgroundColor = "#616161";
-    attachFactorClickHandler(e);
+    if (clickable) attachFactorClickHandler(e);
     return e;
   }
-  function makeQuartileBadge(cls) {
-    const e = el("div", {
-      class: `${cls} Scholarscope_Badge Scholarscope_BadgeClickable notranslate`,
-    });
-    e.textContent = "…";
-    e.style.backgroundColor = "#616161";
-    return e;
-  }
+  const makeFactorBadge = (cls) => makeBadge(cls, true);
+  const makeQuartileBadge = (cls) => makeBadge(cls, false);
 
   // =========================================================================
   // Detail page
@@ -900,12 +890,12 @@
               class: "Scholarscope_Action_Cited",
             }
           : { href: "#", class: "Scholarscope_Action_Cited" },
-        `🔥Cited: ${n}`,
+        `Cited: ${n}`,
       ),
     );
     const liGoogle = el(
       "li",
-      { id: "Scholarscope_GoogleScholar" },
+      null,
       el(
         "a",
         {
@@ -914,7 +904,7 @@
           target: "_blank",
           rel: "noopener",
         },
-        `🎓Google Scholar`,
+        `Google Scholar`,
       ),
     );
     wrap.append(liCite, liGoogle);
@@ -924,31 +914,24 @@
   // =========================================================================
   // Appendix badge group (search page + detail page similar/cited-by lists)
   // =========================================================================
-  function extractDocsumJournal(docsum) {
-    const c = docsum.querySelector(
-      ".docsum-journal-citation, .short-journal-citation, .docsum-citation .docsum-journal-citation",
-    );
-    if (!c) return "";
-    const raw = c.textContent || "";
-    const firstDot = raw.indexOf(".");
-    return (firstDot > 0 ? raw.slice(0, firstDot) : raw).trim();
-  }
-  function extractDocsumYear(docsum) {
+  function extractDocsumJournalYear(docsum) {
     const c = docsum.querySelector(
       ".docsum-journal-citation, .short-journal-citation",
     );
-    if (!c) return "";
-    const m = (c.textContent || "").match(/\b(19|20)\d{2}\b/);
-    return m ? m[0] : "";
+    if (!c) return { journal: "", year: "" };
+    const raw = c.textContent || "";
+    const firstDot = raw.indexOf(".");
+    const journal = (firstDot > 0 ? raw.slice(0, firstDot) : raw).trim();
+    const m = raw.match(/\b(19|20)\d{2}\b/);
+    return { journal, year: m ? m[0] : "" };
   }
   function extractDocsumArticleType(docsum) {
     const c = docsum.querySelector(".publication-type");
     if (!c) return "";
     return (c.textContent || "").trim().replace(/\.+$/, "");
   }
-  function extractDocsumPmid(docsum) {
-    const p = docsum.querySelector(".docsum-pmid");
-    if (p && p.textContent) return p.textContent.trim();
+  function extractDocsumPmid(docsum, pmidEl) {
+    if (pmidEl && pmidEl.textContent) return pmidEl.textContent.trim();
     const dataId =
       docsum.getAttribute && docsum.getAttribute("data-article-id");
     if (dataId) return dataId;
@@ -976,9 +959,9 @@
     const lcc = docsum.querySelector(".docsum-citation") || content;
     if (!lcc) return null;
 
-    const journalKw = extractDocsumJournal(docsum);
-    const year = extractDocsumYear(docsum);
-    const pmid = extractDocsumPmid(docsum);
+    const { journal: journalKw, year } = extractDocsumJournalYear(docsum);
+    const pmidEl = docsum.querySelector(".docsum-pmid");
+    const pmid = extractDocsumPmid(docsum, pmidEl);
     const articleType = extractDocsumArticleType(docsum);
     const doi = extractDocsumDoi(docsum);
     const titleNode = docsum.querySelector("a.docsum-title");
@@ -1018,7 +1001,6 @@
       frame.appendChild(at);
     }
 
-    const pmidEl = docsum.querySelector(".docsum-pmid");
     if (doi && pmidEl && pmidEl.parentNode) {
       const doiSpan = el("span", { class: "Scholarscope_DOI notranslate" });
       doiSpan.appendChild(document.createTextNode(" doi: "));
@@ -1065,7 +1047,7 @@
         target: "_blank",
         rel: "noopener",
       },
-      CFG.showCitation ? "🔥Cited: …" : "🔥Cited: —",
+      CFG.showCitation ? "Cited: …" : "Cited: —",
     );
     row.appendChild(citedLink);
 
@@ -1080,7 +1062,7 @@
         target: "_blank",
         rel: "noopener",
       },
-      "🎓Google Scholar",
+      "Google Scholar",
     );
     row.appendChild(gsLink);
 
@@ -1091,7 +1073,7 @@
           "spaced-citation-item citation-part Scholarscope_Action_Abstract",
         title: "点击展开/收起摘要",
       },
-      "📖Full Abstract",
+      "Full Abstract",
     );
     absBtn.addEventListener("click", (ev) => {
       ev.preventDefault();
@@ -1129,8 +1111,8 @@
       if (!cc) return;
       const info = map[e.pmid];
       if (info && typeof info.citation_count === "number")
-        cc.textContent = `🔥Cited: ${info.citation_count}`;
-      else cc.textContent = "🔥Cited: —";
+        cc.textContent = `Cited: ${info.citation_count}`;
+      else cc.textContent = "Cited: —";
     });
   }
 
@@ -1155,17 +1137,8 @@
     snippet.style.opacity = "0.6";
     content.appendChild(snippet);
     try {
-      const xmlText = await efetchAbstractXml(pmid);
-      const doc = new DOMParser().parseFromString(xmlText, "text/xml");
-      const tags = doc.getElementsByTagName("AbstractText");
-      let html = "";
-      for (let i = 0; i < tags.length; i++) {
-        const label = tags[i].getAttribute("Label");
-        const inner = tags[i].innerHTML;
-        html += label ? `<p><b>${label}: </b>${inner}</p>` : `<p>${inner}</p>`;
-      }
-      if (!html) html = "<b>No abstract.</b>";
-      snippet.innerHTML = DOMPurify.sanitize(html);
+      const { abstractHtml } = await efetchAbstractXml(pmid);
+      snippet.innerHTML = DOMPurify.sanitize(abstractHtml);
       snippet.style.opacity = "1";
       snippet.style.borderLeft = "solid 0.2rem #0094DF";
       snippet.style.paddingLeft = "1rem";
@@ -1179,6 +1152,8 @@
   // Google Scholar
   // =========================================================================
   const SCHOLAR_RESULT_SELECTOR = ".gs_r.gs_or.gs_scl";
+  const DOCSUM_SELECTOR =
+    ".search-results-chunk .full-docsum, #gs_res_ccl_mid .full-docsum";
 
   function extractScholarTitle(gsR) {
     const a = gsR.querySelector(".gs_rt > a");
@@ -1241,43 +1216,39 @@
     return null;
   }
 
-  function buildPubmedSearchUrl(title) {
-    const t = (title || "").trim();
-    if (!t) return "";
-    return `${PUBMED_BASE}?term=${encodeURIComponent(t).replace(/%20/g, "+")}`;
-  }
-
   async function esearchPmid(title, journal) {
     const t = (title || "").trim();
     if (!t) throw new Error("no title");
     const j = (journal || "").trim();
-    const buildUrl = (withJournal) => {
+    const isShortTitle = t.length < 12 || t.split(/\s+/).length < 8;
+    const buildUrl = (term) => {
       const u = new URL(ESEARCH_ENDPOINT);
       u.searchParams.set("db", "pubmed");
       u.searchParams.set("retmax", "1");
       u.searchParams.set("retmode", "json");
-      const term =
-        withJournal && j
-          ? `(${t}[Title]) AND (${j}[Journal])`
-          : `(${t}[Title])`;
       u.searchParams.set("term", term);
       if (CFG.pubmedApiKey) u.searchParams.set("api_key", CFG.pubmedApiKey);
       return u.toString();
     };
+    const tryTerm = async (term) => {
+      const r = await gmFetch(buildUrl(term));
+      const ids = r && r.esearchresult && r.esearchresult.idlist;
+      return Array.isArray(ids) && ids.length ? ids[0] : "";
+    };
     return efetchQueue(async () => {
-      const r1 = await gmFetch(buildUrl(true));
-      const ids1 = r1 && r1.esearchresult && r1.esearchresult.idlist;
-      if (Array.isArray(ids1) && ids1.length) return ids1[0];
-      if (j) {
-        const r2 = await gmFetch(buildUrl(false));
-        const ids2 = r2 && r2.esearchresult && r2.esearchresult.idlist;
-        if (Array.isArray(ids2) && ids2.length) return ids2[0];
+      if (isShortTitle) {
+        if (j) {
+          const id = await tryTerm(`(${t}[Title]) AND (${j}[Journal])`);
+          if (id) return id;
+        }
+        const id2 = await tryTerm(`(${t}[Title])`);
+        if (id2) return id2;
       }
-      return "";
+      return await tryTerm(t);
     });
   }
 
-  async function toggleScholarAbstract(gsR, title, journal) {
+  async function toggleScholarAbstract(gsR) {
     const ri = gsR.querySelector(".gs_ri") || gsR;
     const existing = ri.querySelector(
       '.full-view-snippet[data-fullview-scholar="1"]',
@@ -1297,35 +1268,25 @@
       ri.insertBefore(snippet, after.nextSibling);
     else ri.appendChild(snippet);
     try {
-      const pmid = await esearchPmid(title, journal);
+      const title = extractScholarTitle(gsR);
+      const scholarMeta = parseScholarMeta(gsR);
+      const pmid = await esearchPmid(
+        title,
+        scholarMeta.truncated ? "" : scholarMeta.journal,
+      );
       if (!pmid) {
         snippet.textContent = "未找到 PubMed 记录";
         snippet.style.opacity = "1";
         return;
       }
-      const xmlText = await efetchAbstractXml(pmid);
-      const doc = new DOMParser().parseFromString(xmlText, "text/xml");
-      const tags = doc.getElementsByTagName("AbstractText");
-      let html = "";
-      for (let i = 0; i < tags.length; i++) {
-        const label = tags[i].getAttribute("Label");
-        const inner = tags[i].innerHTML;
-        html += label ? `<p><b>${label}: </b>${inner}</p>` : `<p>${inner}</p>`;
-      }
-      const articleTitleNode = doc.getElementsByTagName("ArticleTitle")[0];
-      const journalNode = doc.getElementsByTagName("Journal")[0];
-      const journalTitleNode = journalNode
-        ? journalNode.getElementsByTagName("Title")[0]
-        : null;
-      const articleTitleHtml = articleTitleNode
-        ? articleTitleNode.innerHTML
-        : "";
-      const journalTitleHtml = journalTitleNode
-        ? journalTitleNode.innerHTML
-        : "";
+      const { abstractHtml, articleTitleHtml, journalTitleHtml, doiHtml } =
+        await efetchAbstractXml(pmid);
       const meta =
         `<div class="Scholarscope_AbstractMeta">` +
-        `<a href="${PUBMED_BASE}${pmid}/" target="_blank" rel="noopener">PMID: ${pmid}</a>` +
+        `PMID: <a href="${PUBMED_BASE}${pmid}/" target="_blank" rel="noopener">${pmid}</a>` +
+        (doiHtml
+          ? `DOI: <a href="https://doi.org/${doiHtml}" target="_blank" rel="noopener">${doiHtml}</a>`
+          : "") +
         (articleTitleHtml
           ? `<div class="Scholarscope_AbstractTitle">${articleTitleHtml}</div>`
           : "") +
@@ -1333,8 +1294,7 @@
           ? `<div class="Scholarscope_AbstractJournal"><i>${journalTitleHtml}</i></div>`
           : "") +
         `</div>`;
-      if (!html) html = "<b>No abstract.</b>";
-      snippet.innerHTML = DOMPurify.sanitize(meta + html);
+      snippet.innerHTML = DOMPurify.sanitize(meta + abstractHtml);
       snippet.style.opacity = "1";
       snippet.style.borderLeft = "solid 0.2rem #0094DF";
       snippet.style.paddingLeft = "1rem";
@@ -1350,44 +1310,81 @@
     return scholarQueue(() => gmFetchText(url));
   }
 
-  function extractJournalFromCite(html) {
+  function extractFromCite(html) {
     const doc = new DOMParser().parseFromString(html, "text/html");
     const citrs = doc.querySelectorAll(".gs_citr");
+    let journal = "";
+    let title = "";
     for (const citr of citrs) {
       const it = citr.querySelector("i");
-      const text = it ? it.textContent.trim() : "";
-      if (text) return text;
+      if (!journal) journal = it ? it.textContent.trim() : "";
+      if (title) continue;
+      let beforeText = "";
+      for (const node of citr.childNodes) {
+        if (node === it) break;
+        beforeText += node.textContent || "";
+      }
+      // MLA / Chicago: "Title."
+      const quoted = beforeText.match(/["“]([^"”]+)["”]/);
+      if (quoted && quoted[1]) {
+        title = quoted[1].trim().replace(/\.$/, "");
+      } else {
+        // APA / Harvard: ...). Title. <journal>
+        const apa = beforeText.match(/\)\.\s+([^.]+?)\.\s*$/);
+        if (apa && apa[1]) {
+          title = apa[1].trim();
+        } else {
+          // Vancouver: "Smith J. Title. Journal."
+          const vanc = beforeText.match(/[A-Z]\.\s+([^.]+?)\.\s*$/);
+          if (vanc && vanc[1]) title = vanc[1].trim();
+        }
+      }
     }
-    return "";
+    return { journal, title };
   }
 
   async function recoverScholarJournal(entry, journalDiv) {
     if (!entry || !entry.cid || !journalDiv) return false;
     try {
       const html = await fetchScholarCite(entry.cid);
-      const fullName = extractJournalFromCite(html);
-      if (!fullName || fullName === journalDiv.textContent) return false;
-      journalDiv.textContent = entry.journalKw = fullName;
-      entry.truncated = "";
-      if (entry.factor) {
-        entry.factor.textContent = "…";
-        entry.factor.dataset.origKw = fullName;
-        entry.factor.style.backgroundColor = "#616161";
-        entry.factor.classList.remove(
-          "Scholarscope_NotFound",
-          "Scholarscope_NotFound_F0",
-          "Scholarscope_MedHit",
-          "Scholarscope_IF_Ambiguous",
-        );
+      const { journal: fullName, title: fullTitle } = extractFromCite(html);
+      let updated = false;
+
+      // Recover truncated title
+      if (fullTitle && entry.gsR) {
+        const titleLink =
+          entry.gsR.querySelector(".gs_rt > a") ||
+          entry.gsR.querySelector(".gs_rt");
+        if (titleLink) {
+          const currentTitle = (titleLink.textContent || "").trim();
+          if (currentTitle.includes("…") && !fullTitle.includes("…")) {
+            titleLink.textContent = fullTitle;
+            updated = true;
+          }
+        }
       }
-      if (entry.quartile) {
-        entry.quartile.textContent = "…";
-        entry.quartile.style.backgroundColor = "#616161";
+
+      // Recover truncated journal
+      if (fullName && fullName !== journalDiv.textContent) {
+        journalDiv.textContent = entry.journalKw = fullName;
+        entry.truncated = "";
+        if (entry.factor) {
+          entry.factor.textContent = "…";
+          entry.factor.dataset.origKw = fullName;
+          entry.factor.style.backgroundColor = "#616161";
+          entry.factor.classList.remove(...STATE_CLASSES);
+        }
+        if (entry.quartile) {
+          entry.quartile.textContent = "…";
+          entry.quartile.style.backgroundColor = "#616161";
+        }
+        await fillAppendixJcr(entry);
+        if (CFG.autoFilter) applyFilter(true);
+        if (CFG.autoSort) applySorting();
+        updated = true;
       }
-      await fillAppendixJcr(entry);
-      if (CFG.autoFilter) applyFilter(true);
-      if (CFG.autoSort) applySorting();
-      return true;
+
+      return updated;
     } catch (e) {
       return false;
     }
@@ -1404,6 +1401,7 @@
     const meta = parseScholarMeta(gsR);
     const title = extractScholarTitle(gsR);
     const cited = extractScholarCitedCount(gsR);
+    const titleTruncated = title.includes("…");
 
     const entry = {
       gsR,
@@ -1415,8 +1413,7 @@
     };
 
     const frame = el("div", {
-      class:
-        "Scholarscope_Appendix_JournalFrame Scholarscope_Scholar notranslate",
+      class: "Scholarscope_Appendix_JournalFrame notranslate",
     });
     frame.dataset.cid = entry.cid;
 
@@ -1426,20 +1423,26 @@
     journalDiv.textContent = meta.journal || "—";
     frame.appendChild(journalDiv);
 
-    if (entry.truncated && entry.cid) {
+    if ((entry.truncated || titleTruncated) && entry.cid) {
       journalDiv.classList.add("Scholarscope_BadgeClickable");
-      journalDiv.title = "点击通过 Cite 弹窗补全完整杂志名称";
-      journalDiv.addEventListener("click", async (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        if (journalDiv.dataset.busy === "1") return;
-        journalDiv.dataset.busy = "1";
-        journalDiv.style.opacity = "0.6";
-        const ok = await recoverScholarJournal(entry, journalDiv);
-        journalDiv.style.opacity = "";
-        journalDiv.dataset.busy = "0";
-        if (!ok) window.alert("未能从 Cite 弹窗恢复完整杂志名称");
-      });
+      journalDiv.title = "点击通过 Cite 弹窗补全完整杂志名或标题";
+      journalDiv.addEventListener(
+        "click",
+        async (ev) => {
+          ev.preventDefault();
+          ev.stopPropagation();
+          if (journalDiv.dataset.busy === "1") return;
+          journalDiv.dataset.busy = "1";
+          journalDiv.classList.remove("Scholarscope_BadgeClickable");
+          journalDiv.removeAttribute("title");
+          journalDiv.style.opacity = "0.6";
+          const ok = await recoverScholarJournal(entry, journalDiv);
+          journalDiv.style.opacity = "";
+          journalDiv.dataset.busy = "0";
+          if (!ok) window.alert("未能从 Cite 弹窗恢复完整内容");
+        },
+        { once: true },
+      );
     }
 
     const factor = makeFactorBadge("Scholarscope_Appendix_Factor");
@@ -1468,7 +1471,7 @@
         hidden: "hidden",
         style: "display:none",
       });
-      citedSpan.textContent = `🔥Cited: ${cited}`;
+      citedSpan.textContent = `Cited: ${cited}`;
       frame.appendChild(citedSpan);
     }
 
@@ -1476,7 +1479,10 @@
       gsR.querySelector(".gs_fl.gs_flb") || gsR.querySelector(".gs_fl");
     const sav = fl && fl.querySelector(".gs_or_sav");
     if (fl && sav) {
-      const pubmedHref = buildPubmedSearchUrl(title);
+      const trimmedTitle = (title || "").trim();
+      const pubmedHref = trimmedTitle
+        ? `${PUBMED_BASE}?term=${encodeURIComponent(trimmedTitle).replace(/%20/g, "+")}`
+        : "";
       if (pubmedHref) {
         const pmLink = el(
           "a",
@@ -1488,7 +1494,7 @@
             role: "button",
             title: "在 PubMed 中搜索（标题）",
           },
-          "🏛️PubMed",
+          "PubMed",
         );
         fl.insertBefore(pmLink, sav);
         fl.insertBefore(document.createTextNode(" "), sav);
@@ -1496,21 +1502,17 @@
       const absBtn = el(
         "a",
         {
-          class: "Scholarscope_Action_Abstract_Scholar gs_or_btn",
+          class: "Scholarscope_Action_Abstract gs_or_btn",
           href: "javascript:void(0)",
           role: "button",
           title: "获取 PubMed 第一条结果的完整摘要",
         },
-        "📖Full Abstract",
+        "Full Abstract",
       );
       absBtn.addEventListener("click", (ev) => {
         ev.preventDefault();
         ev.stopPropagation();
-        toggleScholarAbstract(
-          gsR,
-          title,
-          entry.truncated ? "" : entry.journalKw,
-        );
+        toggleScholarAbstract(gsR);
       });
       fl.insertBefore(absBtn, sav);
       fl.insertBefore(document.createTextNode(" "), sav);
@@ -1519,14 +1521,16 @@
     return entry;
   }
 
-  async function processScholarBatch(nodes) {
+  async function processBatch(nodes, injectFn, withCitation) {
     const entries = [];
     nodes.forEach((n) => {
-      const e = injectScholarAppendix(n);
+      const e = injectFn(n);
       if (e) entries.push(e);
     });
     if (!entries.length) return;
-    await Promise.all(entries.map(fillAppendixJcr));
+    const tasks = [Promise.all(entries.map(fillAppendixJcr))];
+    if (withCitation) tasks.push(fillAppendixCitationBatch(entries));
+    await Promise.all(tasks);
     if (CFG.autoFilter) applyFilter(true);
     if (CFG.autoSort) applySorting();
   }
@@ -1596,7 +1600,7 @@
         mid.appendChild(node);
         adopted.push(node);
       });
-      await processScholarBatch(adopted);
+      await processBatch(adopted, injectScholarAppendix, false);
       btn.dataset.nextStart = String(nextStart + 10);
       if (!hasNext) {
         btn.textContent = "已无更多结果";
@@ -1620,7 +1624,7 @@
     const initial = Array.from(
       document.querySelectorAll(`#gs_res_ccl_mid > ${SCHOLAR_RESULT_SELECTOR}`),
     );
-    processScholarBatch(initial);
+    processBatch(initial, injectScholarAppendix, false);
     injectShowMoreButton();
   }
 
@@ -1786,24 +1790,21 @@
     const apply = el(
       "div",
       {
-        class:
-          "Scholarscope_CreateFilterButton Scholarscope_DropDownButton Scholarscope_DropDownButtonPrimary",
+        class: "Scholarscope_DropDownButton Scholarscope_DropDownButtonPrimary",
       },
       "应用",
     );
     const close = el(
       "div",
       {
-        class:
-          "Scholarscope_CloseFilterButton Scholarscope_DropDownButton Scholarscope_DropDownButtonDanger",
+        class: "Scholarscope_DropDownButton Scholarscope_DropDownButtonDanger",
       },
-      "关闭筛选器",
+      "取消筛选",
     );
-    const buttonRow = el(
-      "div",
-      { class: "Scholarscope_FilterButtonRow Scholarscope_ButtonRow" },
-      [apply, close],
-    );
+    const buttonRow = el("div", { class: "Scholarscope_ButtonRow" }, [
+      apply,
+      close,
+    ]);
 
     dd.appendChild(container);
     dd.appendChild(autoCheckbox);
@@ -1818,26 +1819,13 @@
         parseFloat(
           dd.querySelector("#Scholarscope_FilterValueMaxInput").value,
         ) || 2000;
-      CFG.filter.q1 = dd.querySelector(
-        "#Scholarscope_FilterValueQuartile1Input",
-      ).checked
-        ? 1
-        : 0;
-      CFG.filter.q2 = dd.querySelector(
-        "#Scholarscope_FilterValueQuartile2Input",
-      ).checked
-        ? 1
-        : 0;
-      CFG.filter.q3 = dd.querySelector(
-        "#Scholarscope_FilterValueQuartile3Input",
-      ).checked
-        ? 1
-        : 0;
-      CFG.filter.q4 = dd.querySelector(
-        "#Scholarscope_FilterValueQuartile4Input",
-      ).checked
-        ? 1
-        : 0;
+      ["q1", "q2", "q3", "q4"].forEach((k, i) => {
+        CFG.filter[k] = dd.querySelector(
+          `#Scholarscope_FilterValueQuartile${i + 1}Input`,
+        ).checked
+          ? 1
+          : 0;
+      });
       CFG.autoFilter = dd.querySelector("#Scholarscope_FilterCheckbox").checked;
       CFG.autoSort = dd.querySelector("#Scholarscope_SortCheckbox").checked;
       saveCfg();
@@ -1853,7 +1841,7 @@
   }
 
   function applyFilter(enabled) {
-    const docsums = document.querySelectorAll(".full-docsum");
+    const docsums = document.querySelectorAll(DOCSUM_SELECTOR);
     const selectBtn = document.getElementById("Scholarscope_SelectShownFrame");
     let anyHidden = false;
     docsums.forEach((ds) => {
@@ -1896,7 +1884,7 @@
   }
 
   function applySorting() {
-    const docsums = Array.from(document.querySelectorAll(".full-docsum"));
+    const docsums = Array.from(document.querySelectorAll(DOCSUM_SELECTOR));
     if (docsums.length < 2) return;
     const holders = docsums.map(
       (ds) => ds.closest("li, article.full-docsum") || ds,
@@ -1928,7 +1916,7 @@
   }
 
   function selectShownDocsums() {
-    const docsums = document.querySelectorAll(".full-docsum");
+    const docsums = document.querySelectorAll(DOCSUM_SELECTOR);
     docsums.forEach((ds) => {
       if (ds.style.height === "0px") return;
       const cb = ds.querySelector(
@@ -1941,28 +1929,13 @@
   // =========================================================================
   // Bootstrap per page type
   // =========================================================================
-  async function processDocsumBatch(docsums) {
-    const entries = [];
-    docsums.forEach((ds) => {
-      const e = injectAppendixFrame(ds);
-      if (e) entries.push(e);
-    });
-    if (!entries.length) return;
-    await Promise.all([
-      Promise.all(entries.map(fillAppendixJcr)),
-      fillAppendixCitationBatch(entries),
-    ]);
-    if (CFG.autoFilter) applyFilter(true);
-    if (CFG.autoSort) applySorting();
-  }
-
   function watchDocsumList() {
     const processNew = () => {
       const fresh = Array.from(
         document.querySelectorAll(".full-docsum"),
       ).filter((ds) => !ds.dataset.scholarscopeSeen);
       fresh.forEach((ds) => (ds.dataset.scholarscopeSeen = "1"));
-      if (fresh.length) processDocsumBatch(fresh);
+      if (fresh.length) processBatch(fresh, injectAppendixFrame, true);
     };
     processNew();
     const target =
@@ -2055,14 +2028,11 @@
 .Scholarscope_Appendix_JournalFrame{width:100%;min-height:2em;overflow:hidden;margin-top:.3em;margin-bottom:.3em}
 .Scholarscope_Appendix_Journal{border-right:1px solid}
 
-/* IF ambiguity outline */
-.Scholarscope_IF_Ambiguous{
-  text-shadow:0 0 1px #FFD600,0 0 2px #FFD600,1px 0 0 #FFD600,-1px 0 0 #FFD600,0 1px 0 #FFD600,0 -1px 0 #FFD600;
-  -webkit-text-stroke:.3px #FFD600;
-}
+/* IF ambiguity warning */
+.Scholarscope_IF_Ambiguous:before{content:"\u26A0\uFE0F";vertical-align:bottom;font-size:11px}
 
 /* Not Found visual */
-.Scholarscope_NotFound_F0{background:#616161 !important}
+.Scholarscope_NotFound{background:#616161 !important}
 
 /* MedLine 命中但无 IF/分区 */
 .Scholarscope_MedHit{background-color:#0094DF !important;color:#fff}
@@ -2073,14 +2043,16 @@
 .Scholarscope_DOILink:hover{text-decoration:underline}
 
 /* Action row (Cited / Google Scholar / Full Abstract) */
-.Scholarscope_ActionRow{margin-top:.4em}
+.Scholarscope_ActionRow{margin-top:.4em;display:flex;gap:1em}
+.Scholarscope_Action_Cited:before,.Scholarscope_Action_Abstract:before{width:14px;height:14px}
+.Scholarscope_Action_Cited:before{content:"\uD83D\uDD25"}
 .Scholarscope_Action_Abstract{cursor:pointer}
-.Scholarscope_Action_Abstract:hover{color:#04669B}
+.Scholarscope_Action_Abstract:before{content:"\uD83D\uDCD6"}
 .full-view-snippet{overflow:auto;transition:opacity .3s;margin-top:.5rem}
 #adjacent-navigation .full-view-snippet{max-height:200px;}
 
 /* Toolbar */
-.Scholarscope_Toolbar{position:relative;margin:.5rem 0;display:flex;gap:0;align-items:center;flex-wrap:wrap}
+.Scholarscope_Toolbar{position:relative;margin:.5rem 0;display:flex;gap:0;align-items:center}
 .Scholarscope_ToolbarButton{
   display:inline-flex;align-items:center;
   padding:5px 15px 5px 12px;border:1px solid #aeb0b5;font-size:14px;color:#212121;cursor:pointer;
@@ -2092,6 +2064,10 @@
 .Scholarscope_SortButton:before{background:url("data:image/svg+xml,%3Csvg height='14' viewBox='0 0 28 28' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M24.244 18.373l-2.951 2.95.02-10.323a1 1 0 1 0-2 0l-.02 10.253-2.879-2.88A1 1 0 0 0 15 19.788l4.115 4.115a1.498 1.498 0 0 0 2.188.224c.039-.03.076-.062.111-.097l4.244-4.242a1 1 0 0 0-1.414-1.415zM2 20.7a.8.8 0 0 0 .8.8h7.9a.797.797 0 0 0 .8-.8v-.4a.8.8 0 0 0-.8-.8H2.8a.8.8 0 0 0-.8.8v.4zM2.506 13.443A.798.798 0 0 1 2 12.7v-.4a.8.8 0 0 1 .8-.8h12.4a.8.8 0 0 1 .8.8v.4a.8.8 0 0 1-.8.8H2.8a.805.805 0 0 1-.294-.057zM2.074 5.035A.797.797 0 0 1 2 4.7v-.4a.8.8 0 0 1 .8-.8h21.4a.8.8 0 0 1 .8.8v.4a.8.8 0 0 1-.8.8H2.8a.8.8 0 0 1-.726-.465z'/%3E%3C/svg%3E")}
 .Scholarscope_SelectShownFrame{visibility:hidden}
 .Scholarscope_SelectShownFrame:before{background:url("data:image/svg+xml,%3Csvg viewBox='0 0 1024 1024' xmlns='http://www.w3.org/2000/svg'%3E%3Cpath d='M374.656 713.344a32 32 0 0 1 3.648 40.832l-3.648 4.48-128 128a32 32 0 0 1-40.832 3.648l-4.48-3.648-64-64a32 32 0 0 1 40.832-48.96l4.48 3.648L224 818.752l105.344-105.408a32 32 0 0 1 45.312 0zM864 768a32 32 0 1 1 0 64H480a32 32 0 1 1 0-64h384zM374.656 457.344a32 32 0 0 1 3.648 40.832l-3.648 4.48-128 128a32 32 0 0 1-40.832 3.648l-4.48-3.648-64-64a32 32 0 0 1 40.832-48.96l4.48 3.648L224 562.752l105.344-105.408a32 32 0 0 1 45.312 0zM864 512a32 32 0 1 1 0 64H480a32 32 0 0 1 0-64h384zM374.656 201.344a32 32 0 0 1 3.648 40.832l-3.648 4.48-128 128a32 32 0 0 1-40.832 3.648l-4.48-3.648-64-64a32 32 0 0 1 40.832-48.96l4.48 3.648L224 306.752l105.344-105.408a32 32 0 0 1 45.312 0zM864 256a32 32 0 1 1 0 64H480a32 32 0 0 1 0-64h384z'/%3E%3C/svg%3E")}
+@media (max-width:600px){
+  #gs_ab .Scholarscope_ToolbarButton{font-size:0 !important;width:20px;padding:5px !important}
+  #gs_ab .Scholarscope_DropDown{transform:translateX(-50%)}
+}
 
 /* Dropdown */
 .Scholarscope_DropDown{
@@ -2100,7 +2076,6 @@
 .Scholarscope_DropDown label{margin-top:0}
 .Scholarscope_FilterContainerFrame{display:flex;border-bottom:1px dashed #DDD;padding-bottom:10px;margin-bottom:10px}
 .Scholarscope_FilterValueInputFrame{width:62%}
-.Scholarscope_FilterValueInput{width:50px;padding:4px;border:1px solid #bbb}
 .Scholarscope_FilterQuartileInputFrame{width:38%;border-left:1px dashed #DDD;padding-left:10px;margin-top:1em}
 .Scholarscope_FilterValueQuartileTexts{font-weight:bold}
 .Scholarscope_InlineCheck{display:flex;align-items:center;gap:12px!important;margin:10px 0}
@@ -2109,15 +2084,17 @@
   flex:0 0 110px;min-width:110px;text-align:center;padding:8px 0;line-height:1;color:#fff;cursor:pointer;user-select:none;
   display:inline-block !important;visibility:visible !important;opacity:1 !important;pointer-events:auto !important;
   border:0;font:inherit}
-.Scholarscope_DropDownButtonPrimary{background:#0071BC}
-.Scholarscope_DropDownButtonPrimary:hover{background:#20558A}
-.Scholarscope_DropDownButtonDanger{background:#E66666}
-.Scholarscope_DropDownButtonDanger:hover{background:#D50000}
+.Scholarscope_DropDownButtonPrimary,.Scholarscope_Modal_Close{background:#0071BC}
+.Scholarscope_DropDownButtonPrimary:hover,.Scholarscope_Modal_Close:hover{background:#20558A}
+.Scholarscope_DropDownButtonDanger,.Scholarscope_Modal_ClearCache{background:#E66666}
+.Scholarscope_DropDownButtonDanger:hover,.Scholarscope_Modal_ClearCache:hover{background:#D50000}
 .Scholarscope_DropDown input[type="checkbox"]{display:none}
 .Scholarscope_DropDownTitle{font-weight:bold;margin-bottom:10px}
 .Scholarscope_DropDownField{display:block;flex:auto;margin:8px 0}
 .Scholarscope_DropDownLabel{font-weight:bold;margin-bottom:4px}
-.Scholarscope_DropDownControl{width:100%;padding:4px;border:1px solid #bbb;box-sizing:border-box}
+.Scholarscope_FilterValueInput,.Scholarscope_DropDownControl{padding:4px;border:1px solid #bbb}
+.Scholarscope_FilterValueInput{width:50px}
+.Scholarscope_DropDownControl{width:100%;box-sizing:border-box}
 .Scholarscope_DropDownHint{margin-top:4px;color:#5B616B;line-height:1.4}
 .Scholarscope_TermWrapper{display:flex;gap:6px;margin-top:1em;align-items:center}
 
@@ -2130,13 +2107,10 @@
 .Scholarscope_Modal_Table th,.Scholarscope_Modal_Table td{border:1px solid #ddd;padding:6px 10px;text-align:left;font-size:13px}
 .Scholarscope_Modal_Table th{background:#f4f6f8}
 .Scholarscope_Modal_RowHighlight{background:#FFF8E1}
-.Scholarscope_Modal_Close{display:inline-block;margin-top:12px;padding:8px 16px;background:#0071BC;color:#fff;cursor:pointer;user-select:none}
-.Scholarscope_Modal_Close:hover{background:#20558A}
+.Scholarscope_Modal_Close,.Scholarscope_Modal_ClearCache{display:inline-block;margin-top:12px;padding:8px 16px;color:#fff;cursor:pointer;user-select:none}
 .Scholarscope_Modal_ButtonRow{display:flex;gap:10px;margin-top:12px}
 .Scholarscope_Modal_ButtonRow .Scholarscope_Modal_Close,
 .Scholarscope_Modal_ButtonRow .Scholarscope_Modal_ClearCache{margin-top:0}
-.Scholarscope_Modal_ClearCache{display:inline-block;padding:8px 16px;background:#E66666;color:#fff;cursor:pointer;user-select:none}
-.Scholarscope_Modal_ClearCache:hover{background:#D50000}
 
 /* Float clearfix */
 .Scholarscope_Appendix_JournalFrame::after,.Scholarscope_JournalDetailFrame::after{content:"";display:block;clear:both}
@@ -2144,11 +2118,11 @@
 /* Google Scholar */
 .gs_ri .Scholarscope_Appendix_JournalFrame{margin:.4em 0;width:auto}
 .gs_ri .Scholarscope_Appendix_Journal{max-width:24em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.Scholarscope_Action_PubMedSearch,.Scholarscope_Action_Abstract_Scholar{margin-right:.5em;color:#1a0dab;text-decoration:none}
-.Scholarscope_Action_PubMedSearch:hover,.Scholarscope_Action_Abstract_Scholar:hover{color:#04669B;text-decoration:underline}
-.Scholarscope_Action_Abstract_Scholar{cursor:pointer}
+.Scholarscope_Action_PubMedSearch:before,.Scholarscope_Action_GScholar:before{vertical-align:middle;margin-right:2px}
+.Scholarscope_Action_PubMedSearch:before{content:url("data:image/svg+xml,%3Csvg viewBox='0 0 1024 1024' xmlns='http://www.w3.org/2000/svg' width='13' height='13'%3E%3Cpath d='M128 64h448l192 448-192 448H128A128 128 0 0 1 0 832V192A128 128 0 0 1 128 64z' fill='%23205992'/%3E%3Cpath d='M704 64h128l192 448-192 448H704l192-448z' fill='%23205992'/%3E%3C/svg%3E")}
+.Scholarscope_Action_GScholar:before{content:url("data:image/svg+xml,%3Csvg viewBox='0 0 1024 1024' xmlns='http://www.w3.org/2000/svg' width='13' height='13'%3E%3Cpath d='M512 822.24L0 405.334 512 0z' fill='%234285F4'/%3E%3Cpath d='M512 822.24l512-416.906L512 0z' fill='%23356AC3'/%3E%3Cpath d='M213.334 725.334a298.666 298.666 0 1 0 597.332 0 298.666 298.666 0 1 0-597.332 0z' fill='%23A0C3FF'/%3E%3Cpath d='M242.074 597.334C290.01 496.428 392.858 426.666 512 426.666s221.99 69.762 269.926 170.668H242.074z' fill='%2376A7FA'/%3E%3C/svg%3E")}
 .Scholarscope_AbstractMeta{font-size:.92em;color:#5B616B;margin-bottom:.4em}
-.Scholarscope_AbstractMeta a{color:#1a0dab;text-decoration:none}
+.Scholarscope_AbstractMeta a{color:#1a0dab;margin-right:5px;text-decoration:none}
 .Scholarscope_AbstractMeta a:hover{text-decoration:underline}
 .Scholarscope_AbstractTitle{font-weight:600;color:#212121;margin-top:.15em}
 .Scholarscope_AbstractJournal{margin-top:.05em}
