@@ -1681,7 +1681,7 @@
         class:
           "Scholarscope_ToolbarButton Scholarscope_SelectShownFrame notranslate",
       },
-      "全选本页文献",
+      "全选",
     );
     const dropdown = buildFilterDropdown();
 
@@ -2043,7 +2043,7 @@
 .Scholarscope_DOILink:hover{text-decoration:underline}
 
 /* Action row (Cited / Google Scholar / Full Abstract) */
-.Scholarscope_ActionRow{margin-top:.4em;display:flex;gap:1em}
+.Scholarscope_ActionRow{margin-top:.4em;display:flex;column-gap:1em;flex-wrap:wrap}
 .Scholarscope_Action_Cited:before,.Scholarscope_Action_Abstract:before{width:14px;height:14px}
 .Scholarscope_Action_Cited:before{content:"\uD83D\uDD25"}
 .Scholarscope_Action_Abstract{cursor:pointer}
