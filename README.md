@@ -1,6 +1,6 @@
 # JCR Query API
 
-Cloudflare Worker + D1 API serving **Journal Citation Reports (JCR) 2024**, **Chinese Fenqu 2026** grading data, and an **NLM Medline alias fallback** — ~22,440 merged main-table rows plus ~35,398 medline alias records, queryable via a single GET endpoint.
+Cloudflare Worker + D1 API serving **Journal Citation Reports (JCR) 2025** (with JCR 2024 history carried alongside), **Chinese Fenqu 2026** grading data, and an **NLM Medline alias fallback** — ~22,976 main-table rows plus ~35,542 medline alias records, queryable via a single GET endpoint.
 
 **Base URL:** `https://jcr-query-api.4cf.workers.dev/api/jcr`
 
@@ -25,7 +25,7 @@ npm run deploy         # Deploy to Cloudflare
 | `is_abbr` | No | Name/Abbr-mode only — selects which column to search. `0`/`false`: `qname` only. `1`/`true`: `qabbr` only. Omit: both. Applies symmetrically to main table and medline fallback. |
 | `is_med` | No | Dispatch selector. `1`/`true`: skip the main table and search medline directly. Omit/`0`: search main first; if no hits on `page=1`, fall back to medline automatically. |
 | `f` | No | Name/Abbr-mode only — fuzzy pattern. Omit: exact equality. **`1`: `kw%` (prefix, B-tree index).** **`2`: `%kw%` (substring, FTS5 trigram index).** **`3`: `%kw` (suffix, FTS5 trigram + LIKE post-filter).** Literal `%` / `_` / `\` inside `q` are escaped; `"` is doubled for FTS phrases. |
-| `show_all` | No | `0` *(default)*: return name, abbr, jif_2024, jif_quartile, fenqu, is_top. `1`: return all fields from `journals` + `nlm_id` from medline path. On the medline path, orphan records (no `journals_id` link) are dropped when `show_all=0` and returned when `show_all=1`. Internal `qname` / `qabbr` mirror columns are never exposed. |
+| `show_all` | No | `0` *(default)*: return name, abbr, jif_2025, jif_quartile, fenqu, is_top. `1`: return all fields from `journals` (33 JCR 2025 fields + 5 `*_2024` history fields + Fenqu fields) + `nlm_id` from medline path. On the medline path, orphan records (no `journals_id` link) are dropped when `show_all=0` and returned when `show_all=1`. Internal `qname` / `qabbr` mirror columns are never exposed. |
 | `case` | No | Output case for `name` (and `abbr` unless `case_abbr` overrides). `0` *(default)*: original. `1`: all lower. `2`: first word upper. `3`: title case. `4`: ALL UPPER. |
 | `case_abbr` | No | Output case for `abbr` only — same values as `case`. If omitted, `abbr` follows `case`. |
 | `page` | No | Page number (default: `1`) |
@@ -53,7 +53,7 @@ Responses are cached for 24h at both the browser (`Cache-Control: public, max-ag
     {
       "name": "LANCET",
       "abbr": "LANCET",
-      "jif_2024": 98.4,
+      "jif_2025": 109.0,
       "jif_quartile": "Q1",
       "fenqu": "1 区",
       "is_top": "Top"
@@ -121,7 +121,7 @@ For medline-orphan rows returned under `show_all=1`, JCR/Fenqu-derived fields ar
 ```
 src/index.ts        → Worker entry point (single-table search, medline fallback dispatch, pagination, FTS routing)
 schema.sql          → D1 tables: journals (flat) + medline + journals_fts + medline_fts (FTS5 trigram)
-scripts/seed.ts     → Parses Clinicalscientists_JIF2024_integrated_Fenqu_2026.csv + J_Medline.txt → seed.sql (+ FTS rebuild)
+scripts/seed.ts     → Parses JCR2025_integrated_Fenqu2026_JIF2024.csv + J_Medline_202606.txt → seed.sql (+ FTS rebuild)
 wrangler.toml       → D1 binding configuration
 ```
 

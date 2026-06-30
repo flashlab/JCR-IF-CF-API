@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name         MedReading JCR 标注
 // @namespace    local.medreading.jcr
-// @version      0.2.0
+// @version      0.3.2
 // @description  为网易企业邮箱 MedReading 邮件的黄色高亮杂志名自动补充 JCR IF 和中科院分区
 // @author       local
 // @match        https://mailh.qiye.163.com/*
@@ -21,6 +21,12 @@
   // =========================================================================
   const JCR_CACHE_TTL_MS = 7 * 24 * 3600 * 1000;
   const JCR_ENDPOINT = "https://jcr-query-api.4cf.workers.dev/api/jcr";
+  // GM storage key for the lookup cache. The trailing version is part of the
+  // key so it doubles as a schema guard: bump it whenever the cached JCR row
+  // shape changes (e.g. the current-year JIF rename jif_2024 → jif_2025) and
+  // every browser transparently abandons its stale entries on the next load
+  // instead of rendering blank IF badges from old-shape rows.
+  const JCR_CACHE_KEY = "mrjcrCache_v2";
 
   // =========================================================================
   // Utilities
@@ -82,7 +88,7 @@
   // =========================================================================
   function readCache() {
     try {
-      return GM_getValue("mrjcrCache", {});
+      return GM_getValue(JCR_CACHE_KEY, {});
     } catch {
       return {};
     }
@@ -90,7 +96,7 @@
 
   function writeCache(cache) {
     try {
-      GM_setValue("mrjcrCache", cache);
+      GM_setValue(JCR_CACHE_KEY, cache);
     } catch {}
   }
 
@@ -118,7 +124,6 @@
     const q = encodeURIComponent(keyword.toUpperCase());
     let res = await gmFetch(`${JCR_ENDPOINT}?q=${q}`);
     if (!res.total) res = await gmFetch(`${JCR_ENDPOINT}?q=${q}&f=1`);
-    if (!res.total) res = await gmFetch(`${JCR_ENDPOINT}?q=${q}&is_med=1`);
 
     const data = res.data ?? [];
     cacheSet(ck, data, !!res.med_hit);
@@ -138,9 +143,9 @@
   // (slightly darker) so they're visually distinct from sender-provided ones.
   const TIER_COLORS = {
     "1top": "#b71c1c", // CAS 1区 Top — dark red
-    "1": "#2e7d32", // CAS 1区 — dark green
+    "1": "#e65100", // CAS 1区 — deep orange
     "2": "#1565c0", // CAS 2区 — dark blue
-    "3": "#e65100", // CAS 3区 — deep orange
+    "3": "#2e7d32", // CAS 3区 — dark green
   };
   const DEFAULT_COLOR = "#616161";
 
@@ -177,9 +182,14 @@
     const color = tierColor(row);
     let anchor = yellowEl;
 
-    if (row.jif_2024 != null) {
-      const b = makeBadge(`IF: ${row.jif_2024}`, color);
-      anchor.after(b);
+    // Separate the journal name and each badge with a non-breaking space
+    // (\u00A0), not a plain space: a plain whitespace text node between
+    // inline-block badges is collapsible and can be dropped when the user
+    // copies the line, gluing the values together. NBSP is non-collapsing and
+    // survives copy-paste while still rendering as a normal space.
+    if (row.jif_2025 != null) {
+      const b = makeBadge(`IF: ${row.jif_2025}`, color);
+      anchor.after("\u00A0", b);
       anchor = b;
     }
 
@@ -187,9 +197,9 @@
     const fenquMatch = (row.fenqu || "").match(/^([1-4])区/);
     if (fenquMatch) {
       const label = `中科院 ${fenquMatch[1]} 区${row.is_top ? " Top" : ""}`;
-      anchor.after(makeBadge(label, color));
+      anchor.after("\u00A0", makeBadge(label, color));
     } else if (row.jif_quartile) {
-      anchor.after(makeBadge(row.jif_quartile, color));
+      anchor.after("\u00A0", makeBadge(row.jif_quartile, color));
     }
 
     yellowEl.dataset.mrDone = "1";
@@ -250,6 +260,9 @@
   // =========================================================================
   // Bootstrap
   // =========================================================================
+  // Manual trigger only — no auto-scan, no MutationObserver. Annotation runs
+  // exactly once per invocation of the Tampermonkey menu command, scanning the
+  // current document body and any same-origin iframes.
   function runScan() {
     scanRoot(document.body);
     for (const f of document.querySelectorAll("iframe")) tryFrame(f);

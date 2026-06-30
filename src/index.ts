@@ -15,7 +15,7 @@ const ILLEGAL_CHARS_RE = /[^A-Z0-9 &'()+,\-./:]/g;
 // (medline-sourced, LEFT-JOINed to journals via journals_id). Both paths produce
 // the same column shape so the Worker merges them transparently.
 
-// Default projection: name, abbr, jif_2024, jif_quartile, fenqu, is_top + nlm_id (NULL on main).
+// Default projection: name, abbr, jif_2025, jif_quartile, fenqu, is_top + nlm_id (NULL on main).
 // `_sortkey` drives ORDER BY; `_src` separates main-direct rows from medline-mapped rows.
 
 function jsonResponse(data: unknown, status = 200, extraHeaders: Record<string, string> = {}): Response {
@@ -183,11 +183,20 @@ function journalsProjection(showAll: boolean): string {
       'j.qname AS _sortkey, 0 AS _src, ' +
       'j.rank AS rank, j.name AS name, j.abbr AS abbr, j.publisher AS publisher, ' +
       'j.issn AS issn, j.eissn AS eissn, ' +
+      'j.categories AS categories, j.editions AS editions, j.jcr_year AS jcr_year, ' +
+      'j.jif_2025 AS jif_2025, j.five_year_jif AS five_year_jif, ' +
+      'j.jif_without_self_cites AS jif_without_self_cites, ' +
+      'j.jif_quartile AS jif_quartile, j.jif_percentile AS jif_percentile, j.jif_rank AS jif_rank, ' +
+      'j.jci AS jci, j.jci_quartile AS jci_quartile, j.jci_percentile AS jci_percentile, j.jci_rank AS jci_rank, ' +
       'j.total_cites AS total_cites, j.total_articles AS total_articles, j.citable_items AS citable_items, ' +
+      'j.pct_articles_citable AS pct_articles_citable, j.pct_oa_gold AS pct_oa_gold, ' +
+      'j.immediacy_index AS immediacy_index, j.eigenfactor AS eigenfactor, ' +
+      'j.normalized_eigenfactor AS normalized_eigenfactor, j.article_influence_score AS article_influence_score, ' +
+      'j.ais_quartile AS ais_quartile, j.ais_rank AS ais_rank, ' +
       'j.cited_half_life AS cited_half_life, j.citing_half_life AS citing_half_life, ' +
-      'j.jif_2024 AS jif_2024, j.five_year_jif AS five_year_jif, ' +
-      'j.jif_without_self_cites AS jif_without_self_cites, j.jci AS jci, ' +
-      'j.jif_quartile AS jif_quartile, j.jif_rank AS jif_rank, ' +
+      'j.category_quartiles_json AS category_quartiles_json, ' +
+      'j.jif_2024 AS jif_2024, j.jci_2024 AS jci_2024, j.jif_quartile_2024 AS jif_quartile_2024, ' +
+      'j.total_cites_2024 AS total_cites_2024, j.total_articles_2024 AS total_articles_2024, ' +
       'j.fenqu AS fenqu, j.is_top AS is_top, ' +
       'j.dalei_en AS dalei_en, j.dalei_zh AS dalei_zh, j.xiaolei_info AS xiaolei_info, ' +
       'j.db_source AS db_source, j.lang AS lang, ' +
@@ -197,7 +206,7 @@ function journalsProjection(showAll: boolean): string {
   return (
     'j.qname AS _sortkey, 0 AS _src, ' +
     'j.name AS name, j.abbr AS abbr, ' +
-    'j.jif_2024 AS jif_2024, j.jif_quartile AS jif_quartile, ' +
+    'j.jif_2025 AS jif_2025, j.jif_quartile AS jif_quartile, ' +
     'j.fenqu AS fenqu, j.is_top AS is_top'
   );
 }
@@ -218,11 +227,20 @@ function medlineProjection(showAll: boolean): string {
       'j.publisher AS publisher, ' +
       'COALESCE(j.issn,  h.m_issn)  AS issn, ' +
       'COALESCE(j.eissn, h.m_eissn) AS eissn, ' +
+      'j.categories AS categories, j.editions AS editions, j.jcr_year AS jcr_year, ' +
+      'j.jif_2025 AS jif_2025, j.five_year_jif AS five_year_jif, ' +
+      'j.jif_without_self_cites AS jif_without_self_cites, ' +
+      'j.jif_quartile AS jif_quartile, j.jif_percentile AS jif_percentile, j.jif_rank AS jif_rank, ' +
+      'j.jci AS jci, j.jci_quartile AS jci_quartile, j.jci_percentile AS jci_percentile, j.jci_rank AS jci_rank, ' +
       'j.total_cites AS total_cites, j.total_articles AS total_articles, j.citable_items AS citable_items, ' +
+      'j.pct_articles_citable AS pct_articles_citable, j.pct_oa_gold AS pct_oa_gold, ' +
+      'j.immediacy_index AS immediacy_index, j.eigenfactor AS eigenfactor, ' +
+      'j.normalized_eigenfactor AS normalized_eigenfactor, j.article_influence_score AS article_influence_score, ' +
+      'j.ais_quartile AS ais_quartile, j.ais_rank AS ais_rank, ' +
       'j.cited_half_life AS cited_half_life, j.citing_half_life AS citing_half_life, ' +
-      'j.jif_2024 AS jif_2024, j.five_year_jif AS five_year_jif, ' +
-      'j.jif_without_self_cites AS jif_without_self_cites, j.jci AS jci, ' +
-      'j.jif_quartile AS jif_quartile, j.jif_rank AS jif_rank, ' +
+      'j.category_quartiles_json AS category_quartiles_json, ' +
+      'j.jif_2024 AS jif_2024, j.jci_2024 AS jci_2024, j.jif_quartile_2024 AS jif_quartile_2024, ' +
+      'j.total_cites_2024 AS total_cites_2024, j.total_articles_2024 AS total_articles_2024, ' +
       'j.fenqu AS fenqu, j.is_top AS is_top, ' +
       'j.dalei_en AS dalei_en, j.dalei_zh AS dalei_zh, j.xiaolei_info AS xiaolei_info, ' +
       'j.db_source AS db_source, j.lang AS lang, ' +
@@ -233,7 +251,7 @@ function medlineProjection(showAll: boolean): string {
     'COALESCE(j.qname, h.m_qname) AS _sortkey, 1 AS _src, ' +
     'COALESCE(j.name, h.m_name) AS name, ' +
     'COALESCE(j.abbr, h.m_abbr) AS abbr, ' +
-    'j.jif_2024 AS jif_2024, j.jif_quartile AS jif_quartile, ' +
+    'j.jif_2025 AS jif_2025, j.jif_quartile AS jif_quartile, ' +
     'j.fenqu AS fenqu, j.is_top AS is_top'
   );
 }

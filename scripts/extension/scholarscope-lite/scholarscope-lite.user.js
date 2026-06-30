@@ -344,7 +344,7 @@
     const baseHeaders = [
       "name",
       "abbr",
-      "jif_2024",
+      "jif_2025",
       "jif_quartile",
       "fenqu",
       "is_top",
@@ -740,7 +740,7 @@
       setBadge(quartileEl, "N/A", "#616161");
       return;
     }
-    const ifVal = primary.jif_2024;
+    const ifVal = primary.jif_2025;
     setBadge(
       factorEl,
       ifVal == null || ifVal === "" ? "N/A" : String(ifVal),
